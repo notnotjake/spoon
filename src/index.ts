@@ -12,7 +12,7 @@ const DEFAULT_DIR = "~/ai-scratch/gh";
 const CONFIG_PATH = join(os.homedir(), ".config", "gain", "config.json");
 const META_FILENAME = ".gain.json";
 const SUPPORTED_PROVIDERS = new Set(["claude", "opencode", "amp"]);
-const COMMANDS = new Set(["search", "config", "purge", "clear", "remove"]);
+const COMMANDS = new Set(["search", "config", "purge", "clear", "remove", "ls"]);
 
 const styles = {
   title: (text: string) => kleur.bold().cyan(text),
@@ -21,6 +21,9 @@ const styles = {
   warn: (text: string) => kleur.yellow(text),
   error: (text: string) => kleur.red(text),
   muted: (text: string) => kleur.gray(text),
+  green: (text: string) => kleur.green(text),
+  orange: (text: string) => kleur.yellow(text),
+  bold: (text: string) => kleur.bold(text),
 };
 
 type GainConfig = {
@@ -465,7 +468,12 @@ async function readSingleKey(prompt: string) {
       stdin.setRawMode(false);
       stdin.pause();
       stdin.removeListener("data", onData);
-      resolveKey(data.toString("utf8"));
+      const key = data.toString("utf8");
+      if (key === "\x03") {
+        logLine("");
+        process.exit(0);
+      }
+      resolveKey(key);
     };
 
     process.stdout.write(prompt);
@@ -577,6 +585,23 @@ async function runGain(command: string, positional: string[], options: Record<st
     return;
   }
 
+  if (command === "ls") {
+    const entries = collectRepos(config.baseDir);
+    if (entries.length === 0) {
+      logInfo("No repos found.");
+      return;
+    }
+    const sorted = entries
+      .slice()
+      .sort((a, b) => new Date(b.meta.lastAccess).getTime() - new Date(a.meta.lastAccess).getTime());
+    for (const entry of sorted) {
+      const { meta } = entry;
+      logLine(`${styles.label(meta.repoFullName)} ${styles.muted(`(${meta.branch})`)}`);
+      logLine(`    ${styles.muted(formatDate(meta.lastAccess))}`);
+    }
+    return;
+  }
+
   const provider = options.provider ?? config.provider;
   await ensureProvider(provider);
 
@@ -630,7 +655,7 @@ async function handleRepo({
       branch = meta?.branch ?? undefined;
     }
 
-    const actionKey = await readSingleKey(`${styles.label("open")} Enter to open · Tab to edit: `);
+    const actionKey = await readSingleKey(`${kleur.green(`${kleur.bold("Enter")} Open`)}  ${styles.muted("·")}  ${kleur.yellow(`${kleur.bold("Tab")} Edit`)} `);
     logLine("");
     const key = actionKey[0];
     const wantsEdit = key === "\t" || key?.toLowerCase() === "e";
@@ -703,6 +728,7 @@ function printUsage() {
   logLine(`  ${styles.label("gain")} <url|org/name|query> [-p provider] [-b branch]`);
   logLine(`  ${styles.label("gain")} search <query> [-p provider] [-b branch]`);
   logLine(`  ${styles.label("gain")} config --ttl 7d --dir ~/ai-scratch/gh -p claude`);
+  logLine(`  ${styles.label("gain")} ls`);
   logLine(`  ${styles.label("gain")} purge`);
   logLine(`  ${styles.label("gain")} clear`);
   logLine(`  ${styles.label("gain")} remove`);
