@@ -10,10 +10,10 @@ import { cancel, isCancel, intro, multiselect, outro, selectKey } from "@clack/p
 const DEFAULT_TTL = ms("14d");
 const DEFAULT_DIR = "~/ai-scratch/gh";
 const CONFIG_PATH = join(os.homedir(), ".config", "gain", "config.json");
-const LOG_PATH = join(os.homedir(), ".config", "gain", "clone.log");
+const LOG_PATH = join(os.homedir(), ".config", "gain", "history.jsonl");
 const META_FILENAME = ".gain.json";
 const SUPPORTED_PROVIDERS = new Set(["claude", "opencode", "amp"]);
-const COMMANDS = new Set(["search", "config", "purge", "clear", "remove", "ls"]);
+const COMMANDS = new Set(["config", "remove", "ls"]);
 
 const styles = {
   title: (text: string) => kleur.bold().cyan(text),
@@ -223,6 +223,7 @@ async function resolveRepo(input: string) {
 }
 
 async function searchRepo(query: string) {
+  logInfo(`${styles.muted(`Searching for "${query}"...`)}`);
   const json = await runCommand("gh", ["search", "repos", query, "--limit", "50", "--json", "fullName,url" ]);
   const results = JSON.parse(json) as { fullName: string; url: string }[];
   if (results.length === 0) {
@@ -319,10 +320,49 @@ function writeMeta(dir: string, meta: RepoMeta) {
   writeFileSync(metaPath(dir), JSON.stringify(meta, null, 2));
 }
 
-function logClone(repoFullName: string) {
+type HistoryEntry = {
+  repoFullName: string;
+  timestamp: string;
+};
+
+function readHistory(): HistoryEntry[] {
+  if (!existsSync(LOG_PATH)) {
+    return [];
+  }
+  const entries: HistoryEntry[] = [];
+  const content = readFileSync(LOG_PATH, "utf8");
+  for (const line of content.split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      entries.push(JSON.parse(line));
+    } catch {
+      // Skip malformed lines
+    }
+  }
+  return entries;
+}
+
+function appendHistory(repoFullName: string) {
   ensureDir(join(os.homedir(), ".config", "gain"));
-  const timestamp = new Date().toISOString();
-  appendFileSync(LOG_PATH, `${timestamp}\t${repoFullName}\n`);
+  const entry: HistoryEntry = {
+    repoFullName,
+    timestamp: new Date().toISOString(),
+  };
+  appendFileSync(LOG_PATH, JSON.stringify(entry) + "\n");
+}
+
+function syncHistory(baseDir: string) {
+  const entries = collectRepos(baseDir);
+  if (entries.length === 0) return;
+
+  const history = readHistory();
+  const logged = new Set(history.map((h) => h.repoFullName));
+
+  for (const entry of entries) {
+    if (!logged.has(entry.meta.repoFullName)) {
+      appendHistory(entry.meta.repoFullName);
+    }
+  }
 }
 
 function collectRepos(baseDir: string): RepoEntry[] {
@@ -373,7 +413,7 @@ function purgeRepos(entries: RepoEntry[], ttlMs: number) {
 
 async function purgeOnInvoke(baseDir: string, ttlMs: number) {
   const entries = collectRepos(baseDir);
-  if (entries.length < 4) {
+  if (entries.length < 10) {
     return;
   }
   const purged = purgeRepos(entries, ttlMs);
@@ -382,50 +422,60 @@ async function purgeOnInvoke(baseDir: string, ttlMs: number) {
   }
 }
 
-async function removeRepos(baseDir: string) {
+async function removeRepos(baseDir: string, ttlMs: number) {
   const entries = collectRepos(baseDir);
   if (entries.length === 0) {
     logInfo("No repos to remove.");
     return;
   }
 
-  intro("gain remove");
-  const sorted = entries
-    .slice()
-    .sort((a, b) => new Date(b.meta.lastAccess).getTime() - new Date(a.meta.lastAccess).getTime());
+  const active: RepoEntry[] = [];
+  const expired: RepoEntry[] = [];
 
-  const mode = await selectKey({
-    message: "Removal mode",
-    options: [
-      { value: "a", label: "Select all repos", hint: "press a" },
-      { value: "m", label: "Select manually" },
-    ],
-  });
-
-  if (isCancel(mode)) {
-    cancel("Canceled.");
-    return;
+  for (const entry of entries) {
+    if (shouldPurge(entry, ttlMs)) {
+      expired.push(entry);
+    } else {
+      active.push(entry);
+    }
   }
 
-  if (mode === "a") {
-    const confirmAll = await confirm(`Remove all ${sorted.length} repos?`);
-    if (!confirmAll) {
-      outro("No repos removed.");
-      return;
+  // Sort both by last access (newest first)
+  active.sort((a, b) => new Date(b.meta.lastAccess).getTime() - new Date(a.meta.lastAccess).getTime());
+  expired.sort((a, b) => new Date(b.meta.lastAccess).getTime() - new Date(a.meta.lastAccess).getTime());
+
+  type SelectOption = { value: string; label: string; hint?: string };
+  const options: SelectOption[] = [];
+
+  if (active.length > 0) {
+    options.push({ value: "_active_header", label: "── Active ──", hint: "" });
+    for (const entry of active) {
+      options.push({
+        value: entry.path,
+        label: entry.meta.repoFullName,
+        hint: formatDate(entry.meta.lastAccess),
+      });
     }
-    for (const entry of sorted) {
-      removeDir(entry.path);
-    }
-    outro(`Removed ${sorted.length} repo${sorted.length === 1 ? "" : "s"}.`);
-    return;
   }
+
+  if (expired.length > 0) {
+    options.push({ value: "_expired_header", label: "── Expired ──", hint: "" });
+    for (const entry of expired) {
+      options.push({
+        value: entry.path,
+        label: entry.meta.repoFullName,
+        hint: formatDate(entry.meta.lastAccess),
+      });
+    }
+  }
+
+  // Pre-select expired repos
+  const initialValues = expired.map((e) => e.path);
 
   const selection = await multiselect({
     message: "Select repos to remove",
-    options: sorted.map((entry) => ({
-      value: entry.path,
-      label: `${entry.meta.repoFullName} — last used ${formatDate(entry.meta.lastAccess)}`,
-    })),
+    options,
+    initialValues,
     required: false,
   });
 
@@ -434,17 +484,22 @@ async function removeRepos(baseDir: string) {
     return;
   }
 
-  const paths = selection as string[];
+  const paths = (selection as string[]).filter((p) => !p.startsWith("_"));
   if (paths.length === 0) {
-    outro("No repos selected.");
+    outro("No repos removed.");
     return;
   }
 
+  const removed: string[] = [];
   for (const path of paths) {
-    removeDir(path);
+    const entry = entries.find((e) => e.path === path);
+    if (entry) {
+      removed.push(entry.meta.repoFullName);
+      removeDir(path);
+    }
   }
 
-  outro(`Removed ${paths.length} repo${paths.length === 1 ? "" : "s"}.`);
+  outro(`Removed ${removed.join(", ")}`);
 }
 
 async function ensureProvider(provider: string) {
@@ -549,6 +604,7 @@ function updateMetaAccess(meta: RepoMeta, branch: string) {
 async function runGain(command: string, positional: string[], options: Record<string, string>) {
   const config = readConfig();
   ensureDir(config.baseDir);
+  syncHistory(config.baseDir);
   await purgeOnInvoke(config.baseDir, config.ttlMs);
 
   if (command === "config") {
@@ -573,54 +629,60 @@ async function runGain(command: string, positional: string[], options: Record<st
     return;
   }
 
-  if (command === "purge") {
-    const entries = collectRepos(config.baseDir);
-    const purged = purgeRepos(entries, config.ttlMs);
-    logInfo(`${styles.label("purged")} ${purged} expired repos.`);
-    return;
-  }
-
-  if (command === "clear") {
-    removeDir(config.baseDir);
-    ensureDir(config.baseDir);
-    logInfo("Scratch directory cleared.");
-    return;
-  }
-
   if (command === "remove") {
-    await removeRepos(config.baseDir);
+    await removeRepos(config.baseDir, config.ttlMs);
     return;
   }
 
   if (command === "ls") {
     const entries = collectRepos(config.baseDir);
-    if (entries.length === 0) {
+    const localRepoNames = new Set(entries.map((e) => e.meta.repoFullName));
+
+    // Read history to find previously accessed repos that are no longer local
+    const history = readHistory();
+    const repoLastSeen = new Map<string, string>();
+    for (const entry of history) {
+      if (!localRepoNames.has(entry.repoFullName)) {
+        repoLastSeen.set(entry.repoFullName, entry.timestamp);
+      }
+    }
+    const historyRepos = Array.from(repoLastSeen.entries())
+      .map(([repoFullName, lastSeen]) => ({ repoFullName, lastSeen }))
+      .sort((a, b) => new Date(b.lastSeen).getTime() - new Date(a.lastSeen).getTime());
+
+    if (entries.length === 0 && historyRepos.length === 0) {
       logInfo("No repos found.");
       return;
     }
-    const sorted = entries
-      .slice()
-      .sort((a, b) => new Date(b.meta.lastAccess).getTime() - new Date(a.meta.lastAccess).getTime());
-    for (const entry of sorted) {
-      const { meta } = entry;
-      logLine(`${styles.label(meta.repoFullName)} ${styles.muted(`(${meta.branch})`)}`);
-      logLine(`    ${styles.muted(formatDate(meta.lastAccess))}`);
+
+    // Show available (local) repos first
+    if (entries.length > 0) {
+      logLine(styles.label("Available"));
+      const sorted = entries
+        .slice()
+        .sort((a, b) => new Date(b.meta.lastAccess).getTime() - new Date(a.meta.lastAccess).getTime());
+      for (const entry of sorted) {
+        const { meta } = entry;
+        logLine(`  ${meta.repoFullName} ${styles.muted(`(${meta.branch})`)}`);
+      }
     }
+
+    // Show history (non-local) repos
+    if (historyRepos.length > 0) {
+      if (entries.length > 0) {
+        logLine("");
+      }
+      logLine(styles.label("History"));
+      for (const repo of historyRepos) {
+        logLine(`  ${styles.muted(repo.repoFullName)}`);
+      }
+    }
+
     return;
   }
 
   const provider = options.provider ?? config.provider;
   await ensureProvider(provider);
-
-  if (command === "search") {
-    const query = positional.slice(1).join(" ").trim();
-    if (!query) {
-      throw new Error("Search query required.");
-    }
-    const repo = await searchRepo(query);
-    await handleRepo({ repo, provider, branchOverride: options.branch, config });
-    return;
-  }
 
   if (command === "run") {
     const repoInput = positional.join(" ").trim();
@@ -696,7 +758,7 @@ async function handleRepo({
           removeDir(targetDir);
           await cloneRepo(repo.url, branch ?? "main", targetDir);
           clonedAt = new Date().toISOString();
-          logClone(`${repo.owner}/${repo.repo}`);
+          appendHistory(`${repo.owner}/${repo.repo}`);
         } else {
           await pullRepo(targetDir, branch ?? "main");
         }
@@ -713,7 +775,7 @@ async function handleRepo({
     branch = await selectBranch(repo.url, branchOverride);
     await cloneRepo(repo.url, branch, targetDir);
     clonedAt = new Date().toISOString();
-    logClone(`${repo.owner}/${repo.repo}`);
+    appendHistory(`${repo.owner}/${repo.repo}`);
   }
 
   const now = new Date().toISOString();
@@ -735,11 +797,8 @@ async function handleRepo({
 function printUsage() {
   logLine(`${styles.title("gain")} ${styles.muted("<repo|query>")}`);
   logLine(`  ${styles.label("gain")} <url|org/name|query> [-p provider] [-b branch]`);
-  logLine(`  ${styles.label("gain")} search <query> [-p provider] [-b branch]`);
   logLine(`  ${styles.label("gain")} config --ttl 7d --dir ~/ai-scratch/gh -p claude`);
   logLine(`  ${styles.label("gain")} ls`);
-  logLine(`  ${styles.label("gain")} purge`);
-  logLine(`  ${styles.label("gain")} clear`);
   logLine(`  ${styles.label("gain")} remove`);
   logLine("");
   logLine(`Providers: ${Array.from(SUPPORTED_PROVIDERS).join(", ")}`);
