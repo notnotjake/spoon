@@ -46,10 +46,11 @@ gain config             # Configure defaults
   --dir <path>          # Base directory for cloned repos
   -p, --provider <name> # Default AI provider
 
-gain purge              # Remove repos past their TTL
+gain ls                 # List cloned repos
 gain remove             # Interactively select repos to remove
-gain clear              # Remove all cloned repos
 ```
+
+Repos past their TTL are automatically purged on each invocation.
 
 ## How it works
 
