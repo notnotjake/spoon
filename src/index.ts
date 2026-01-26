@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "fs";
 import { join, resolve } from "path";
 import os from "os";
 import readline from "readline";
@@ -7,9 +7,10 @@ import kleur from "kleur";
 import ms from "ms";
 import { cancel, isCancel, intro, multiselect, outro, selectKey } from "@clack/prompts";
 
-const DEFAULT_TTL = ms("7d");
+const DEFAULT_TTL = ms("14d");
 const DEFAULT_DIR = "~/ai-scratch/gh";
 const CONFIG_PATH = join(os.homedir(), ".config", "gain", "config.json");
+const LOG_PATH = join(os.homedir(), ".config", "gain", "clone.log");
 const META_FILENAME = ".gain.json";
 const SUPPORTED_PROVIDERS = new Set(["claude", "opencode", "amp"]);
 const COMMANDS = new Set(["search", "config", "purge", "clear", "remove", "ls"]);
@@ -316,6 +317,12 @@ function readMeta(dir: string): RepoMeta | null {
 
 function writeMeta(dir: string, meta: RepoMeta) {
   writeFileSync(metaPath(dir), JSON.stringify(meta, null, 2));
+}
+
+function logClone(repoFullName: string) {
+  ensureDir(join(os.homedir(), ".config", "gain"));
+  const timestamp = new Date().toISOString();
+  appendFileSync(LOG_PATH, `${timestamp}\t${repoFullName}\n`);
 }
 
 function collectRepos(baseDir: string): RepoEntry[] {
@@ -689,6 +696,7 @@ async function handleRepo({
           removeDir(targetDir);
           await cloneRepo(repo.url, branch ?? "main", targetDir);
           clonedAt = new Date().toISOString();
+          logClone(`${repo.owner}/${repo.repo}`);
         } else {
           await pullRepo(targetDir, branch ?? "main");
         }
@@ -705,6 +713,7 @@ async function handleRepo({
     branch = await selectBranch(repo.url, branchOverride);
     await cloneRepo(repo.url, branch, targetDir);
     clonedAt = new Date().toISOString();
+    logClone(`${repo.owner}/${repo.repo}`);
   }
 
   const now = new Date().toISOString();
