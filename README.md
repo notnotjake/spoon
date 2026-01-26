@@ -25,8 +25,7 @@ gain https://github.com/facebook/react
 gain facebook/react
 
 # Search for a repo
-gain "state management"
-gain search zustand
+gain zustand
 ```
 
 Once cloned, gain launches your configured AI CLI in the repo directory so you can immediately start asking questions about the codebase.
@@ -50,7 +49,7 @@ gain ls                 # List cloned repos
 gain remove             # Interactively select repos to remove
 ```
 
-Repos past their TTL are automatically purged on each invocation.
+Repos past their TTL are automatically purged once you have 10+ repos.
 
 ## How it works
 
