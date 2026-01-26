@@ -565,7 +565,11 @@ async function chooseUpdateMode() {
 
 async function cloneRepo(repoUrl: string, branch: string, targetDir: string) {
   ensureDir(resolve(targetDir, ".."));
+  logInfo(`${styles.label("clone")} ${styles.muted(repoUrl)}`);
+  const start = Date.now();
   await runCommand("git", ["clone", "--branch", branch, "--single-branch", repoUrl, targetDir]);
+  const elapsed = Date.now() - start;
+  logInfo(`${styles.label("cloned")} ${styles.muted(`in ${ms(elapsed)}`)}`);
 }
 
 async function checkoutBranch(dir: string, branch: string) {
@@ -586,7 +590,7 @@ async function pullRepo(dir: string, branch: string) {
 }
 
 async function launchProvider(provider: string, cwd: string) {
-  logInfo(`${styles.label("launch")} ${provider} ${styles.muted(`(${cwd})`)}`);
+  logInfo(`${styles.label("open")} ${styles.muted(`with ${provider}`)}`);
   const exitCode = await runInteractive(provider, [], { cwd });
   if (exitCode !== 0) {
     throw new Error(`${provider} exited with code ${exitCode}.`);
@@ -614,7 +618,7 @@ async function runGain(command: string, positional: string[], options: Record<st
       nextConfig.provider = options.provider;
     }
     if (options.ttl) {
-      const parsed = ms(options.ttl);
+      const parsed = ms(options.ttl as ms.StringValue);
       if (typeof parsed !== "number") {
         throw new Error("Invalid TTL value.");
       }

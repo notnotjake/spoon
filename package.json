@@ -9,5 +9,10 @@
     "@clack/prompts": "^0.7.0",
     "kleur": "^4.1.5",
     "ms": "^2.1.3"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.6",
+    "@types/ms": "^2.1.0",
+    "@types/node": "^25.0.10"
   }
 }
