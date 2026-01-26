@@ -4,10 +4,25 @@ import { join, resolve } from "path";
 import os from "os";
 import readline from "readline";
 import kleur from "kleur";
-import ms from "ms";
 import { cancel, isCancel, intro, multiselect, outro, selectKey } from "@clack/prompts";
 
-const DEFAULT_TTL = ms("14d");
+function parseMs(value: string): number {
+  const match = value.match(/^(\d+)\s*(d|h|m|s|ms)$/);
+  if (!match) return NaN;
+  const n = parseInt(match[1]);
+  const unit: Record<string, number> = { ms: 1, s: 1000, m: 60000, h: 3600000, d: 86400000 };
+  return n * unit[match[2]];
+}
+
+function formatMs(ms: number): string {
+  if (ms >= 86400000) return `${(ms / 86400000).toFixed(1)}d`;
+  if (ms >= 3600000) return `${(ms / 3600000).toFixed(1)}h`;
+  if (ms >= 60000) return `${(ms / 60000).toFixed(1)}m`;
+  if (ms >= 1000) return `${(ms / 1000).toFixed(1)}s`;
+  return `${ms}ms`;
+}
+
+const DEFAULT_TTL = parseMs("14d");
 const DEFAULT_DIR = "~/ai-scratch/gh";
 const CONFIG_PATH = join(os.homedir(), ".config", "gain", "config.json");
 const LOG_PATH = join(os.homedir(), ".config", "gain", "history.jsonl");
@@ -569,7 +584,7 @@ async function cloneRepo(repoUrl: string, branch: string, targetDir: string) {
   const start = Date.now();
   await runCommand("git", ["clone", "--branch", branch, "--single-branch", repoUrl, targetDir]);
   const elapsed = Date.now() - start;
-  logInfo(`${styles.label("cloned")} ${styles.muted(`in ${ms(elapsed)}`)}`);
+  logInfo(`${styles.label("cloned")} ${styles.muted(`in ${formatMs(elapsed)}`)}`);
 }
 
 async function checkoutBranch(dir: string, branch: string) {
@@ -618,7 +633,7 @@ async function runGain(command: string, positional: string[], options: Record<st
       nextConfig.provider = options.provider;
     }
     if (options.ttl) {
-      const parsed = ms(options.ttl as ms.StringValue);
+      const parsed = parseMs(options.ttl);
       if (typeof parsed !== "number") {
         throw new Error("Invalid TTL value.");
       }
