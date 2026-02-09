@@ -881,10 +881,17 @@ async function runGain(command: string, positional: string[], options: Record<st
       throw new Error("Selection canceled.");
     }
 
-    await launchProvider(provider, selected.path);
-    const updatedMeta = updateMetaAccess(selected.meta, selected.meta.branch);
-    writeMeta(selected.path, updatedMeta);
-    appendHistory(selected.meta.repoFullName);
+    const parsed = parseRepoSlug(selected.meta.repoFullName);
+    if (!parsed) {
+      throw new Error(`Invalid repo metadata: ${selected.meta.repoFullName}`);
+    }
+    const repo = {
+      owner: parsed.owner,
+      repo: parsed.repo,
+      url: selected.meta.repoUrl || parsed.url,
+    };
+
+    await handleRepo({ repo, provider, branchOverride: options.branch, config });
     return;
   }
 
