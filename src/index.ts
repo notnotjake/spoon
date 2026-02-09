@@ -4,7 +4,7 @@ import { join, resolve } from "path";
 import os from "os";
 import readline from "readline";
 import kleur from "kleur";
-import { cancel, isCancel, intro, multiselect, outro, selectKey } from "@clack/prompts";
+import { cancel, isCancel, multiselect, outro } from "@clack/prompts";
 
 function parseMs(value: string): number {
   const match = value.match(/^(\d+)\s*(d|h|m|s|ms)$/);
@@ -27,8 +27,11 @@ const DEFAULT_DIR = "~/ai-scratch/gh";
 const CONFIG_PATH = join(os.homedir(), ".config", "gain", "config.json");
 const LOG_PATH = join(os.homedir(), ".config", "gain", "history.jsonl");
 const META_FILENAME = ".gain.json";
-const SUPPORTED_PROVIDERS = new Set(["claude", "opencode", "amp"]);
 const COMMANDS = new Set(["config", "remove", "ls"]);
+const DEFAULT_LAUNCH: Record<string, string> = {
+  c: "claude",
+  x: "codex",
+};
 
 const styles = {
   title: (text: string) => kleur.bold().cyan(text),
@@ -43,7 +46,7 @@ const styles = {
 };
 
 type GainConfig = {
-  provider: string;
+  launch: Record<string, string>;
   ttlMs: number;
   baseDir: string;
 };
@@ -92,7 +95,7 @@ function ensureDir(path: string) {
 
 function readConfig(): GainConfig {
   const base: GainConfig = {
-    provider: "claude",
+    launch: { ...DEFAULT_LAUNCH },
     ttlMs: DEFAULT_TTL,
     baseDir: expandHome(DEFAULT_DIR),
   };
@@ -102,11 +105,21 @@ function readConfig(): GainConfig {
   }
 
   try {
-    const data = JSON.parse(readFileSync(CONFIG_PATH, "utf8"));
+    const data = JSON.parse(readFileSync(CONFIG_PATH, "utf8")) as Record<string, unknown>;
+    const configuredLaunch: Record<string, string> = {};
+    if (typeof data.launch === "object" && data.launch !== null) {
+      for (const [rawName, rawCommand] of Object.entries(data.launch as Record<string, unknown>)) {
+        if (typeof rawCommand !== "string") continue;
+        const name = rawName.trim();
+        const command = rawCommand.trim();
+        if (!name || !command) continue;
+        configuredLaunch[name] = command;
+      }
+    }
     return {
-      provider: data.provider ?? base.provider,
+      launch: Object.keys(configuredLaunch).length > 0 ? configuredLaunch : base.launch,
       ttlMs: typeof data.ttlMs === "number" ? data.ttlMs : base.ttlMs,
-      baseDir: data.baseDir ? expandHome(data.baseDir) : base.baseDir,
+      baseDir: typeof data.baseDir === "string" ? expandHome(data.baseDir) : base.baseDir,
     };
   } catch (error) {
     logWarn("Config file unreadable, using defaults.");
@@ -114,24 +127,24 @@ function readConfig(): GainConfig {
   }
 }
 
-function writeConfig(config: GainConfig) {
-  ensureDir(join(os.homedir(), ".config", "gain"));
-  writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2));
-}
-
 function parseArgs(argv: string[]) {
   const positional: string[] = [];
   const options: Record<string, string> = {};
+  const launchCommand: string[] = [];
   let help = false;
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
+    if (arg === "--") {
+      launchCommand.push(...argv.slice(i + 1));
+      break;
+    }
     if (arg === "-h" || arg === "--help") {
       help = true;
       continue;
     }
-    if (arg === "-p" || arg === "--provider") {
-      options.provider = argv[i + 1];
+    if (arg === "-l" || arg === "--launch") {
+      options.launch = argv[i + 1];
       i += 1;
       continue;
     }
@@ -140,20 +153,14 @@ function parseArgs(argv: string[]) {
       i += 1;
       continue;
     }
-    if (arg === "--ttl") {
-      options.ttl = argv[i + 1];
-      i += 1;
-      continue;
-    }
-    if (arg === "--dir") {
-      options.dir = argv[i + 1];
-      i += 1;
+    if (arg === "--check") {
+      options.check = "true";
       continue;
     }
     positional.push(arg);
   }
 
-  return { positional, options, help };
+  return { positional, options, help, launchCommand };
 }
 
 async function runCommand(command: string, args: string[], options?: { cwd?: string }) {
@@ -176,8 +183,57 @@ async function runCommand(command: string, args: string[], options?: { cwd?: str
   return stdout.trim();
 }
 
-async function runInteractive(command: string, args: string[], options?: { cwd?: string }) {
-  const proc = Bun.spawn([command, ...args], {
+async function openPathWithDefaultApp(path: string) {
+  const platform = os.platform();
+  if (platform === "darwin") {
+    await runCommand("open", [path]);
+    return;
+  }
+  if (platform === "win32") {
+    await runCommand("explorer", [path]);
+    return;
+  }
+  await runCommand("xdg-open", [path]);
+}
+
+function validateConfigFileReadable() {
+  if (!existsSync(CONFIG_PATH)) {
+    return { ok: false, error: `Config file does not exist: ${CONFIG_PATH}` };
+  }
+
+  let data: unknown;
+  try {
+    data = JSON.parse(readFileSync(CONFIG_PATH, "utf8"));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { ok: false, error: `Config is not valid JSON: ${message}` };
+  }
+
+  if (!data || typeof data !== "object") {
+    return { ok: false, error: "Config root must be a JSON object." };
+  }
+
+  const record = data as Record<string, unknown>;
+  if (!record.launch || typeof record.launch !== "object") {
+    return { ok: false, error: "Config must include a 'launch' object." };
+  }
+
+  const entries = Object.entries(record.launch as Record<string, unknown>);
+  if (entries.length === 0) {
+    return { ok: false, error: "Config 'launch' must include at least one alias." };
+  }
+
+  for (const [alias, command] of entries) {
+    if (typeof command !== "string" || !command.trim()) {
+      return { ok: false, error: `Config 'launch.${alias}' must be a non-empty string.` };
+    }
+  }
+
+  return { ok: true as const };
+}
+
+async function runInteractiveShell(commandLine: string, options?: { cwd?: string }) {
+  const proc = Bun.spawn(["sh", "-lc", commandLine], {
     cwd: options?.cwd,
     stdin: "inherit",
     stdout: "inherit",
@@ -701,10 +757,88 @@ async function removeRepos(baseDir: string, ttlMs: number) {
   outro(`Removed ${removed.join(", ")}`);
 }
 
-async function ensureProvider(provider: string) {
-  if (!SUPPORTED_PROVIDERS.has(provider)) {
-    throw new Error(`Provider must be one of: ${Array.from(SUPPORTED_PROVIDERS).join(", ")}.`);
+function resolveDefaultLaunchAlias(config: GainConfig) {
+  const aliases = Object.keys(config.launch);
+  if (aliases.length === 0) {
+    throw new Error("No launch aliases configured. Add at least one entry to config.launch.");
   }
+  return aliases[0];
+}
+
+function resolveLaunchTarget(config: GainConfig, requestedAlias?: string, launchCommand?: string[]) {
+  if (launchCommand && launchCommand.length > 0) {
+    return {
+      name: launchCommand[0],
+      command: launchCommand.join(" "),
+    };
+  }
+
+  const alias = (requestedAlias ?? resolveDefaultLaunchAlias(config)).trim();
+  if (!alias) {
+    throw new Error("Launch alias is required.");
+  }
+
+  const command = config.launch[alias]?.trim();
+  if (!command) {
+    throw new Error(`Unknown launch alias "${alias}". Add it to config.launch.`);
+  }
+
+  return { name: alias, command };
+}
+
+async function commandExists(command: string) {
+  const name = command.trim();
+  if (!name) return false;
+  try {
+    if (os.platform() === "win32") {
+      await runCommand("where", [name]);
+    } else {
+      await runCommand("which", [name]);
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function recoverLeadingDoubleDash(
+  command: string,
+  positional: string[],
+  launchCommand: string[],
+  launchAliases: Record<string, string>,
+): Promise<{ command: string; positional: string[]; launchCommand: string[] }> {
+  if (command !== "run") {
+    return { command, positional, launchCommand };
+  }
+  if (launchCommand.length > 0) {
+    return { command, positional, launchCommand };
+  }
+  if (positional.length === 0) {
+    return { command, positional, launchCommand };
+  }
+  if (COMMANDS.has(positional[0])) {
+    return { command, positional, launchCommand };
+  }
+  if (parseRepoSlug(positional.join(" ").trim())) {
+    return { command, positional, launchCommand };
+  }
+  if (positional.length === 1) {
+    const single = positional[0].trim();
+    const aliasMatch = Object.prototype.hasOwnProperty.call(launchAliases, single);
+    const commandMatch = Object.values(launchAliases).some((value) => value === single);
+    if (!aliasMatch && !commandMatch) {
+      return { command, positional, launchCommand };
+    }
+  }
+  if (!(await commandExists(positional[0]))) {
+    return { command, positional, launchCommand };
+  }
+
+  return {
+    command: "pick",
+    positional: [],
+    launchCommand: positional,
+  };
 }
 
 async function promptLine(question: string) {
@@ -845,11 +979,12 @@ async function pullRepo(dir: string, branch: string) {
   await runCommand("git", ["pull", "--ff-only"], { cwd: dir });
 }
 
-async function launchProvider(provider: string, cwd: string) {
-  logInfo(`${styles.label("open")} ${styles.muted(`with ${provider}`)}`);
-  const exitCode = await runInteractive(provider, [], { cwd });
+async function launchTarget(target: { name: string; command: string }, cwd: string) {
+  const detail = target.command === target.name ? target.name : `${target.name} (${target.command})`;
+  logInfo(`${styles.label("open")} ${styles.muted(`with ${detail}`)}`);
+  const exitCode = await runInteractiveShell(target.command, { cwd });
   if (exitCode !== 0) {
-    throw new Error(`${provider} exited with code ${exitCode}.`);
+    throw new Error(`${target.name} exited with code ${exitCode}.`);
   }
 }
 
@@ -861,33 +996,41 @@ function updateMetaAccess(meta: RepoMeta, branch: string) {
   };
 }
 
-async function runGain(command: string, positional: string[], options: Record<string, string>) {
+async function runGain(command: string, positional: string[], options: Record<string, string>, launchCommand: string[]) {
+  if (command === "config") {
+    const hasExtraPositional = positional.length > 1;
+    const checkRequested = options.check === "true";
+    const optionKeys = Object.keys(options);
+    const hasUnexpectedOption = optionKeys.some((key) => key !== "check");
+    if (hasExtraPositional || hasUnexpectedOption) {
+      throw new Error("Config command supports only: 'gain config' and 'gain config --check'.");
+    }
+
+    if (checkRequested) {
+      const result = validateConfigFileReadable();
+      if (!result.ok) {
+        throw new Error(result.error);
+      }
+      logInfo(`Config is readable: ${styles.muted(CONFIG_PATH)}`);
+      return;
+    }
+
+    if (!existsSync(CONFIG_PATH)) {
+      throw new Error(`Config file does not exist: ${CONFIG_PATH}`);
+    }
+    await openPathWithDefaultApp(CONFIG_PATH);
+    logInfo(`Opened ${styles.muted(CONFIG_PATH)}`);
+    return;
+  }
+
   const config = readConfig();
+  const recovered = await recoverLeadingDoubleDash(command, positional, launchCommand, config.launch);
+  command = recovered.command;
+  positional = recovered.positional;
+  launchCommand = recovered.launchCommand;
   ensureDir(config.baseDir);
   syncHistory(config.baseDir);
   await purgeOnInvoke(config.baseDir, config.ttlMs);
-
-  if (command === "config") {
-    const nextConfig = { ...config };
-    if (options.provider) {
-      await ensureProvider(options.provider);
-      nextConfig.provider = options.provider;
-    }
-    if (options.ttl) {
-      const parsed = parseMs(options.ttl);
-      if (typeof parsed !== "number") {
-        throw new Error("Invalid TTL value.");
-      }
-      nextConfig.ttlMs = parsed;
-    }
-    if (options.dir) {
-      nextConfig.baseDir = expandHome(options.dir);
-    }
-
-    writeConfig(nextConfig);
-    logInfo("Config updated.");
-    return;
-  }
 
   if (command === "remove") {
     await removeRepos(config.baseDir, config.ttlMs);
@@ -941,8 +1084,7 @@ async function runGain(command: string, positional: string[], options: Record<st
     return;
   }
 
-  const provider = options.provider ?? config.provider;
-  await ensureProvider(provider);
+  const target = resolveLaunchTarget(config, options.launch, launchCommand);
 
   if (command === "pick") {
     const entries = collectRepos(config.baseDir);
@@ -967,7 +1109,7 @@ async function runGain(command: string, positional: string[], options: Record<st
       url: selected.meta.repoUrl || parsed.url,
     };
 
-    await handleRepo({ repo, provider, branchOverride: options.branch, config });
+    await handleRepo({ repo, target, branchOverride: options.branch, config });
     return;
   }
 
@@ -977,18 +1119,18 @@ async function runGain(command: string, positional: string[], options: Record<st
       throw new Error("Repository reference required.");
     }
     const repo = await resolveRepo(repoInput, config.baseDir);
-    await handleRepo({ repo, provider, branchOverride: options.branch, config });
+    await handleRepo({ repo, target, branchOverride: options.branch, config });
   }
 }
 
 async function handleRepo({
   repo,
-  provider,
+  target,
   branchOverride,
   config,
 }: {
   repo: { owner: string; repo: string; url: string };
-  provider: string;
+  target: { name: string; command: string };
   branchOverride?: string;
   config: GainConfig;
 }) {
@@ -1015,18 +1157,18 @@ async function handleRepo({
     if (status.behind === 0) {
       await checkoutBranch(targetDir, branch ?? "main");
     } else {
-    const actionKey = await readSingleKey(`${kleur.green(`${kleur.bold("Enter")} Launch ${kleur.bold(provider)}`)}  ${styles.muted("·")}  ${kleur.yellow(`${kleur.bold("Tab")} Update`)} `);
-    logLine("");
-    const key = actionKey[0];
-    const wantsUpdate = key === "\t" || key?.toLowerCase() === "u";
+      const actionKey = await readSingleKey(`${kleur.green(`${kleur.bold("Enter")} Launch ${kleur.bold(target.name)}`)}  ${styles.muted("·")}  ${kleur.yellow(`${kleur.bold("Tab")} Update`)} `);
+      logLine("");
+      const key = actionKey[0];
+      const wantsUpdate = key === "\t" || key?.toLowerCase() === "u";
 
-    if (wantsUpdate) {
-      if (status.behind !== 0) {
-        await pullRepo(targetDir, branch ?? "main");
+      if (wantsUpdate) {
+        if (status.behind !== 0) {
+          await pullRepo(targetDir, branch ?? "main");
+        }
+      } else {
+        await checkoutBranch(targetDir, branch ?? "main");
       }
-    } else {
-      await checkoutBranch(targetDir, branch ?? "main");
-    }
     }
   } else {
     branch = await selectBranch(repo.url, branchOverride);
@@ -1045,7 +1187,7 @@ async function handleRepo({
   };
   writeMeta(targetDir, meta);
 
-  await launchProvider(provider, targetDir);
+  await launchTarget(target, targetDir);
 
   const updatedMeta = updateMetaAccess(meta, branch ?? "main");
   writeMeta(targetDir, updatedMeta);
@@ -1054,16 +1196,20 @@ async function handleRepo({
 function printUsage() {
   logLine(`${styles.title("gain")} ${styles.muted("<repo|query>")}`);
   logLine(`  ${styles.label("gain")} ${styles.muted("(pick from local repos)")}`);
-  logLine(`  ${styles.label("gain")} <url|org/name|query> [-p provider] [-b branch]`);
-  logLine(`  ${styles.label("gain")} config --ttl 7d --dir ~/ai-scratch/gh -p claude`);
+  logLine(`  ${styles.label("gain")} <url|org/name|query> [-l alias] [-b branch] [-- <command>]`);
+  logLine(`  ${styles.label("gain")} config`);
+  logLine(`  ${styles.label("gain")} config --check`);
+  logLine(`  ${styles.label("gain")} -l c`);
+  logLine(`  ${styles.label("gain")} -- codex`);
+  logLine(`  ${styles.label("gain")} react -- claude --continue`);
   logLine(`  ${styles.label("gain")} ls`);
   logLine(`  ${styles.label("gain")} remove`);
   logLine("");
-  logLine(`Providers: ${Array.from(SUPPORTED_PROVIDERS).join(", ")}`);
+  logLine(`Aliases come from config.launch. Default is the first key.`);
 }
 
 async function main() {
-  const { positional, options, help } = parseArgs(process.argv.slice(2));
+  const { positional, options, help, launchCommand } = parseArgs(process.argv.slice(2));
   if (help || positional[0] === "help") {
     printUsage();
     process.exit(0);
@@ -1074,7 +1220,7 @@ async function main() {
     : (COMMANDS.has(positional[0]) ? positional[0] : "run");
 
   try {
-    await runGain(command, positional, options);
+    await runGain(command, positional, options, launchCommand);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     logError(message);
