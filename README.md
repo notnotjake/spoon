@@ -1,71 +1,197 @@
 # gain
 
-Clone any GitHub repo and instantly start an AI chat session to explore and ask questions about the code.
+`gain` helps you explore open source repos and dependencies with agents.
+
+It removes friction from finding a repo, cloning or opening it, and launching your preferred agent CLI in the project immediately.
+
+## Why use it
+
+- Fast interactive repo selection from local clones.
+- Search GitHub and pick a repo with fuzzy selection.
+- Open exact repos directly with `org/repo` or full URL.
+- Launch with configurable aliases (`claude`, `codex`, custom commands).
+- Keep your local cache clean with TTL-based purge.
 
 ## Install
 
+Requirements:
+
+- [bun](https://bun.sh)
+- [fzf](https://github.com/junegunn/fzf)
+- [GitHub CLI](https://cli.github.com) (`gh`)
+- Agent CLI commands you want to launch (`claude`, `codex`, wrappers, etc.)
+
 ```bash
-bun install -g .
+bun install
+bun link
 ```
 
-### Requirements
+## Command Reference
 
-- [Bun](https://bun.sh)
-- [fzf](https://github.com/junegunn/fzf) - for interactive selection
-- [GitHub CLI](https://cli.github.com) (`gh`) - for repo search
-- Any AI CLI command you want to launch (`claude`, `codex`, custom wrappers, etc.)
+| Command                                              | Description                                        |
+| ---------------------------------------------------- | -------------------------------------------------- |
+| `gain`                                               | Open a local repo interactively.                   |
+| `gain <org/repo>`                                    | Open by exact match.                               |
+| `gain <url>`                                         | Open by full GitHub URL.                           |
+| `gain <search>`                                      | Search GitHub and select interactively.            |
+| `gain <org/repo> [-l <alias>] [-b <branch>]`        | Open with launch alias and/or branch override.     |
+| `gain <org/repo> [-- <command...>]`                 | Override launch command for one run.               |
+| `gain ls`                                            | List local repos and history entries.              |
+| `gain remove`                                        | Interactively select local repos to remove.        |
+| `gain config`                                        | Open config file in your system default app.       |
+| `gain help [command]`                                | Show help.                                         |
+| `gain <command> --help`                              | Show command-specific help.                        |
 
-## Usage
+### Open repos
+
+**Open local repo interactively**
+
+Description: Open a local repo from an interactive picker.
+
+Syntax:
 
 ```bash
-# Open a local repo from an interactive picker
 gain
-
-# Clone by URL
-gain https://github.com/facebook/react
-
-# Clone by org/name
-gain facebook/react
-
-# Search for a repo
-gain zustand
 ```
 
-Once cloned, gain launches a command in the repo directory so you can immediately start asking questions about the codebase.
-
-### Options
-
-```
--l, --launch <alias>    Launch alias from config.launch
--b, --branch <name>     Clone/checkout a specific branch
--- <command...>         Override launch command for this run
-```
-
-### Commands
+Example:
 
 ```bash
-gain                    # Pick a local repo and launch into it
-gain config             # Open config in your system default app
-gain config --check     # Validate config readability
-
-gain ls                 # List cloned repos
-gain remove             # Interactively select repos to remove
+gain
 ```
 
-Repos past their TTL are automatically purged once you have 10+ repos.
+**Open by exact repo or URL**
 
-## How it works
+Description: Open or clone directly using exact `org/repo` or full URL.
 
-1. Accepts a GitHub URL, `org/name` shorthand, or search query
-2. If searching, uses `gh` and `fzf` to let you pick from results
-3. Prompts for branch selection via `fzf`
-4. Clones to `~/ai-scratch/gh/<org>/<repo>` (configurable)
-5. Launches the selected command in that directory
-6. Tracks access times and auto-purges old repos
+Syntax:
+
+```bash
+gain <org/repo>
+gain <url>
+```
+
+Examples:
+
+```bash
+gain sveltejs/kit
+gain https://github.com/sveltejs/svelte
+```
+
+**Search and select from GitHub**
+
+Description: Search GitHub repos, then pick one interactively.
+
+Syntax:
+
+```bash
+gain <search>
+```
+
+Example:
+
+```bash
+gain svelte
+```
+
+**Use launch, branch, and command overrides**
+
+Description: Control how the selected repo is launched.
+
+Syntax:
+
+```bash
+gain <org/repo> -l <alias>
+gain <org/repo> -b <branch>
+gain <org/repo> -- <command...>
+```
+
+Examples:
+
+```bash
+gain sveltejs/kit -l x
+gain sveltejs/kit -b next
+gain sveltejs/kit -- claude --continue
+```
+
+### Manage local repos
+
+**List repos**
+
+Description: Print locally available repos and historical repos no longer present.
+
+Syntax:
+
+```bash
+gain ls
+```
+
+Example:
+
+```bash
+gain ls
+```
+
+**Remove repos**
+
+Description: Interactively select one or more local repos to remove.
+
+Syntax:
+
+```bash
+gain remove
+```
+
+Example:
+
+```bash
+gain remove
+```
+
+**Open config**
+
+Description: Open `gain` config file in your default system app.
+
+Syntax:
+
+```bash
+gain config
+```
+
+Example:
+
+```bash
+gain config
+```
+
+### Help
+
+**Show help**
+
+Description: Show global help or command-specific help.
+
+Syntax:
+
+```bash
+gain help [command]
+gain <command> --help
+```
+
+Example:
+
+```bash
+gain ls --help
+```
 
 ## Configuration
 
-Config is stored at `~/.config/gain/config.json`:
+Config path:
+
+```bash
+~/.config/gain/config.json
+```
+
+Example config:
 
 ```json
 {
@@ -74,26 +200,15 @@ Config is stored at `~/.config/gain/config.json`:
     "x": "codex",
     "t": "tmux new -A -s ai && claude"
   },
-  "ttlMs": 604800000,
+  "ttlMs": 1209600000,
   "baseDir": "~/ai-scratch/gh"
 }
 ```
 
-Default launch alias is the first key in `launch`.
+Notes:
 
-Select an alias at runtime:
-
-```bash
-gain -l c
-gain react -l x
-```
-
-Override with an arbitrary command for one run:
-
-```bash
-gain -- codex
-gain react -- claude --continue
-```
+- Default launch alias is the first key in `launch`.
+- Repos are purged by TTL on invocation after local repo count grows (10+ repos).
 
 ## License
 

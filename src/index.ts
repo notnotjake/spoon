@@ -5,6 +5,13 @@ import os from "os";
 import readline from "readline";
 import kleur from "kleur";
 import { cancel, isCancel, multiselect, outro } from "@clack/prompts";
+import {
+  isHelpFlag,
+  isNamedCommand,
+  printCommandHelp,
+  printMainHelp,
+  resolveHelpTarget,
+} from "./help";
 
 function parseMs(value: string): number {
   const match = value.match(/^(\d+)\s*(d|h|m|s|ms)$/);
@@ -153,10 +160,6 @@ function parseArgs(argv: string[]) {
       i += 1;
       continue;
     }
-    if (arg === "--check") {
-      options.check = "true";
-      continue;
-    }
     positional.push(arg);
   }
 
@@ -194,42 +197,6 @@ async function openPathWithDefaultApp(path: string) {
     return;
   }
   await runCommand("xdg-open", [path]);
-}
-
-function validateConfigFileReadable() {
-  if (!existsSync(CONFIG_PATH)) {
-    return { ok: false, error: `Config file does not exist: ${CONFIG_PATH}` };
-  }
-
-  let data: unknown;
-  try {
-    data = JSON.parse(readFileSync(CONFIG_PATH, "utf8"));
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    return { ok: false, error: `Config is not valid JSON: ${message}` };
-  }
-
-  if (!data || typeof data !== "object") {
-    return { ok: false, error: "Config root must be a JSON object." };
-  }
-
-  const record = data as Record<string, unknown>;
-  if (!record.launch || typeof record.launch !== "object") {
-    return { ok: false, error: "Config must include a 'launch' object." };
-  }
-
-  const entries = Object.entries(record.launch as Record<string, unknown>);
-  if (entries.length === 0) {
-    return { ok: false, error: "Config 'launch' must include at least one alias." };
-  }
-
-  for (const [alias, command] of entries) {
-    if (typeof command !== "string" || !command.trim()) {
-      return { ok: false, error: `Config 'launch.${alias}' must be a non-empty string.` };
-    }
-  }
-
-  return { ok: true as const };
 }
 
 async function runInteractiveShell(commandLine: string, options?: { cwd?: string }) {
@@ -999,20 +966,10 @@ function updateMetaAccess(meta: RepoMeta, branch: string) {
 async function runGain(command: string, positional: string[], options: Record<string, string>, launchCommand: string[]) {
   if (command === "config") {
     const hasExtraPositional = positional.length > 1;
-    const checkRequested = options.check === "true";
     const optionKeys = Object.keys(options);
-    const hasUnexpectedOption = optionKeys.some((key) => key !== "check");
+    const hasUnexpectedOption = optionKeys.length > 0;
     if (hasExtraPositional || hasUnexpectedOption) {
-      throw new Error("Config command supports only: 'gain config' and 'gain config --check'.");
-    }
-
-    if (checkRequested) {
-      const result = validateConfigFileReadable();
-      if (!result.ok) {
-        throw new Error(result.error);
-      }
-      logInfo(`Config is readable: ${styles.muted(CONFIG_PATH)}`);
-      return;
+      throw new Error("Config command supports only: 'gain config'.");
     }
 
     if (!existsSync(CONFIG_PATH)) {
@@ -1090,7 +1047,7 @@ async function runGain(command: string, positional: string[], options: Record<st
     const entries = collectRepos(config.baseDir);
     if (entries.length === 0) {
       logInfo(`No local repos found in ${styles.muted(config.baseDir)}.`);
-      logInfo(`Run ${styles.label("gain")} ${styles.muted("<url|org/name|query>")} to clone one first.`);
+      logInfo(`Run ${styles.label("gain")} ${styles.muted("<org/repo|url|search>")} to clone one first.`);
       return;
     }
 
@@ -1193,34 +1150,61 @@ async function handleRepo({
   writeMeta(targetDir, updatedMeta);
 }
 
-function printUsage() {
-  logLine(`${styles.title("gain")} ${styles.muted("<repo|query>")}`);
-  logLine(`  ${styles.label("gain")} ${styles.muted("(pick from local repos)")}`);
-  logLine(`  ${styles.label("gain")} <url|org/name|query> [-l alias] [-b branch] [-- <command>]`);
-  logLine(`  ${styles.label("gain")} config`);
-  logLine(`  ${styles.label("gain")} config --check`);
-  logLine(`  ${styles.label("gain")} -l c`);
-  logLine(`  ${styles.label("gain")} -- codex`);
-  logLine(`  ${styles.label("gain")} react -- claude --continue`);
-  logLine(`  ${styles.label("gain")} ls`);
-  logLine(`  ${styles.label("gain")} remove`);
-  logLine("");
-  logLine(`Aliases come from config.launch. Default is the first key.`);
-}
-
 async function main() {
-  const { positional, options, help, launchCommand } = parseArgs(process.argv.slice(2));
-  if (help || positional[0] === "help") {
-    printUsage();
+  const argv = process.argv.slice(2);
+  const command = argv[0];
+
+  if (isHelpFlag(command)) {
+    printMainHelp();
     process.exit(0);
   }
 
-  const command = positional.length === 0
+  if (command === "help") {
+    const target = argv[1];
+
+    if (!target || isHelpFlag(target)) {
+      printMainHelp();
+      process.exit(0);
+    }
+
+    if (argv.length > 2) {
+      logLine("Usage: gain help [command]");
+      process.exit(1);
+    }
+
+    const resolvedTarget = resolveHelpTarget(target);
+    if (!resolvedTarget) {
+      logLine(`Unknown command: ${target}`);
+      process.exit(1);
+    }
+
+    printCommandHelp(resolvedTarget, { detailed: false });
+    process.exit(0);
+  }
+
+  const { positional, options, help, launchCommand } = parseArgs(argv);
+  if (help) {
+    const primary = positional[0];
+    if (!primary) {
+      printMainHelp();
+      process.exit(0);
+    }
+
+    if (isNamedCommand(primary)) {
+      printCommandHelp(primary);
+      process.exit(0);
+    }
+
+    printCommandHelp("run");
+    process.exit(0);
+  }
+
+  const normalizedCommand = positional.length === 0
     ? "pick"
     : (COMMANDS.has(positional[0]) ? positional[0] : "run");
 
   try {
-    await runGain(command, positional, options, launchCommand);
+    await runGain(normalizedCommand, positional, options, launchCommand);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     logError(message);
