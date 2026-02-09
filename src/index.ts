@@ -228,10 +228,15 @@ function parseRepoSlug(input: string) {
   return null;
 }
 
-async function resolveRepo(input: string) {
+async function resolveRepo(input: string, baseDir: string) {
   const parsed = parseRepoSlug(input);
   if (parsed) {
     return parsed;
+  }
+
+  const local = await searchLocalAndHistory(input, baseDir);
+  if (local) {
+    return local;
   }
 
   return await searchRepo(input);
@@ -261,6 +266,72 @@ async function searchRepo(query: string) {
   const [fullName, url] = selection.split("\t");
   const [owner, repo] = fullName.split("/");
   return { owner, repo, url };
+}
+
+async function searchLocalAndHistory(query: string, baseDir: string) {
+  const lowerQuery = query.toLowerCase();
+  const localRepos = collectRepos(baseDir);
+  const history = readHistory();
+
+  // Deduplicate: collect all unique fullNames with their source
+  const seen = new Map<string, "local" | "history">();
+  for (const entry of localRepos) {
+    seen.set(entry.meta.repoFullName, "local");
+  }
+  // History entries not already local
+  const historyNames = new Set<string>();
+  for (const entry of history) {
+    historyNames.add(entry.repoFullName);
+  }
+  for (const name of historyNames) {
+    if (!seen.has(name)) {
+      seen.set(name, "history");
+    }
+  }
+
+  // Match against the repo name part (after /)
+  const exactMatches: { fullName: string; source: "local" | "history" }[] = [];
+  const substringMatches: { fullName: string; source: "local" | "history" }[] = [];
+
+  for (const [fullName, source] of seen) {
+    const repoName = fullName.split("/")[1]?.toLowerCase() ?? "";
+    if (repoName === lowerQuery) {
+      exactMatches.push({ fullName, source });
+    } else if (repoName.includes(lowerQuery) || fullName.toLowerCase().includes(lowerQuery)) {
+      substringMatches.push({ fullName, source });
+    }
+  }
+
+  const pickFrom = exactMatches.length > 0 ? exactMatches : substringMatches;
+
+  if (pickFrom.length === 0) {
+    return null;
+  }
+
+  let chosen: string;
+
+  if (pickFrom.length === 1) {
+    chosen = pickFrom[0].fullName;
+  } else {
+    const lines = pickFrom.map(
+      (m) => `${m.fullName}\t[${m.source}]`
+    );
+    const selection = await fzfSelect(lines, [
+      "--prompt",
+      "Repo > ",
+      "--with-nth",
+      "1,2",
+      "--delimiter",
+      "\t",
+    ]);
+    if (!selection) {
+      throw new Error("Selection canceled.");
+    }
+    chosen = selection.split("\t")[0];
+  }
+
+  const [owner, repo] = chosen.split("/");
+  return { owner, repo, url: `https://github.com/${chosen}` };
 }
 
 async function selectBranch(repoUrl: string, forcedBranch?: string) {
@@ -309,6 +380,40 @@ async function selectBranch(repoUrl: string, forcedBranch?: string) {
 function formatDate(value: string) {
   const date = new Date(value);
   return date.toLocaleString();
+}
+
+function padCell(value: string, width: number) {
+  return value.padEnd(width, " ");
+}
+
+function formatRelativeDate(value: string) {
+  const time = new Date(value).getTime();
+  if (!Number.isFinite(time)) {
+    return "Unknown";
+  }
+
+  const diffMs = Date.now() - time;
+  if (diffMs < 0) {
+    return "Just now";
+  }
+
+  const minute = 60 * 1000;
+  const hour = 60 * minute;
+  const day = 24 * hour;
+  const month = 30 * day;
+  const year = 365 * day;
+
+  if (diffMs < 45 * 1000) return "Just now";
+  if (diffMs < 90 * 1000) return "Last minute";
+  if (diffMs < 45 * minute) return `${Math.round(diffMs / minute)} minutes ago`;
+  if (diffMs < 90 * minute) return "Last hour";
+  if (diffMs < 24 * hour) return `${Math.round(diffMs / hour)} hours ago`;
+  if (diffMs < 36 * hour) return "Yesterday";
+  if (diffMs < 30 * day) return `${Math.round(diffMs / day)} days ago`;
+  if (diffMs < 45 * day) return "Last month";
+  if (diffMs < year) return `${Math.round(diffMs / month)} months ago`;
+  if (diffMs < 545 * day) return "Last year";
+  return `${Math.round(diffMs / year)} years ago`;
 }
 
 function repoDir(baseDir: string, owner: string, repo: string) {
@@ -398,6 +503,66 @@ function collectRepos(baseDir: string): RepoEntry[] {
     }
   }
   return entries;
+}
+
+async function pickLocalRepo(entries: RepoEntry[]) {
+  if (entries.length === 0) {
+    return null;
+  }
+
+  const sorted = entries
+    .slice()
+    .sort((a, b) => new Date(b.meta.lastAccess).getTime() - new Date(a.meta.lastAccess).getTime());
+
+  const rows = sorted.map((entry) => {
+    const [org, project = entry.meta.repoFullName] = entry.meta.repoFullName.split("/");
+    return {
+      org,
+      project,
+      relativeDate: formatRelativeDate(entry.meta.lastAccess),
+    };
+  });
+
+  const projectWidth = rows.reduce((max, row) => Math.max(max, row.project.length), "Project".length);
+  const orgWidth = rows.reduce((max, row) => Math.max(max, row.org.length), "Org".length);
+  const dateWidth = rows.reduce((max, row) => Math.max(max, row.relativeDate.length), "Last Active".length);
+
+  const columnGap = "   ";
+  const header = `${padCell("Project", projectWidth)}${columnGap}${padCell("Org", orgWidth)}${columnGap}${padCell("Last Active", dateWidth)}`;
+  const lines = sorted.map((entry, index) => {
+    const row = rows[index];
+    const number = String(index + 1).padStart(3, " ");
+    const display = [
+      padCell(row.project, projectWidth),
+      padCell(row.org, orgWidth),
+      styles.muted(padCell(row.relativeDate, dateWidth)),
+    ].join(columnGap);
+    return `${number}\t${display}`;
+  });
+
+  const selection = await fzfSelect(lines, [
+    "--prompt",
+    "Project > ",
+    "--ansi",
+    "--with-nth",
+    "2",
+    "--delimiter",
+    "\t",
+    "--header",
+    header,
+  ]);
+
+  if (!selection) {
+    return null;
+  }
+
+  const rawNumber = selection.split("\t")[0];
+  const selectedIndex = Number.parseInt(rawNumber.trim(), 10) - 1;
+  if (selectedIndex < 0 || selectedIndex >= sorted.length) {
+    return null;
+  }
+
+  return sorted[selectedIndex];
 }
 
 function removeDir(path: string) {
@@ -703,12 +868,32 @@ async function runGain(command: string, positional: string[], options: Record<st
   const provider = options.provider ?? config.provider;
   await ensureProvider(provider);
 
+  if (command === "pick") {
+    const entries = collectRepos(config.baseDir);
+    if (entries.length === 0) {
+      logInfo(`No local repos found in ${styles.muted(config.baseDir)}.`);
+      logInfo(`Run ${styles.label("gain")} ${styles.muted("<url|org/name|query>")} to clone one first.`);
+      return;
+    }
+
+    const selected = await pickLocalRepo(entries);
+    if (!selected) {
+      throw new Error("Selection canceled.");
+    }
+
+    await launchProvider(provider, selected.path);
+    const updatedMeta = updateMetaAccess(selected.meta, selected.meta.branch);
+    writeMeta(selected.path, updatedMeta);
+    appendHistory(selected.meta.repoFullName);
+    return;
+  }
+
   if (command === "run") {
     const repoInput = positional.join(" ").trim();
     if (!repoInput) {
       throw new Error("Repository reference required.");
     }
-    const repo = await resolveRepo(repoInput);
+    const repo = await resolveRepo(repoInput, config.baseDir);
     await handleRepo({ repo, provider, branchOverride: options.branch, config });
   }
 }
@@ -815,6 +1000,7 @@ async function handleRepo({
 
 function printUsage() {
   logLine(`${styles.title("gain")} ${styles.muted("<repo|query>")}`);
+  logLine(`  ${styles.label("gain")} ${styles.muted("(pick from local repos)")}`);
   logLine(`  ${styles.label("gain")} <url|org/name|query> [-p provider] [-b branch]`);
   logLine(`  ${styles.label("gain")} config --ttl 7d --dir ~/ai-scratch/gh -p claude`);
   logLine(`  ${styles.label("gain")} ls`);
@@ -829,15 +1015,10 @@ async function main() {
     printUsage();
     process.exit(0);
   }
-  if (positional.length === 0) {
-    printUsage();
-    process.exit(1);
-  }
 
-  let command = positional[0];
-  if (!COMMANDS.has(command)) {
-    command = "run";
-  }
+  const command = positional.length === 0
+    ? "pick"
+    : (COMMANDS.has(positional[0]) ? positional[0] : "run");
 
   try {
     await runGain(command, positional, options);

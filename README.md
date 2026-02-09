@@ -18,6 +18,9 @@ bun install -g .
 ## Usage
 
 ```bash
+# Open a local repo from an interactive picker
+gain
+
 # Clone by URL
 gain https://github.com/facebook/react
 
@@ -40,6 +43,7 @@ Once cloned, gain launches your configured AI CLI in the repo directory so you c
 ### Commands
 
 ```bash
+gain                    # Pick a local repo and launch into it
 gain config             # Configure defaults
   --ttl <duration>      # Auto-cleanup after duration (e.g., 7d, 24h)
   --dir <path>          # Base directory for cloned repos
