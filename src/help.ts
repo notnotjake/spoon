@@ -95,7 +95,7 @@ const commandHelp: Record<"pick" | "run" | "ls" | "remove" | "config", CommandHe
     ],
   },
   config: {
-    summary: "Open gain config",
+    summary: "Open spoon config",
     usage: [
       {
         value: "config",
@@ -150,14 +150,14 @@ function printOptionRows(rows: HelpRow[], descriptionColumn: number): void {
 
 function usagePrefix(value: string): string {
   if (!value) {
-    return styles.label("gain");
+    return styles.label("spoon");
   }
 
-  return `${styles.label("gain")} ${formatCommandValue(value)}`;
+  return `${styles.label("spoon")} ${formatCommandValue(value)}`;
 }
 
 function usageRaw(value: string): string {
-  return value ? `gain ${value}` : "gain";
+  return value ? `spoon ${value}` : "spoon";
 }
 
 export function isHelpFlag(value?: string): boolean {
@@ -170,23 +170,23 @@ export function isNamedCommand(value?: string): value is NamedCommand {
 
 export function resolveHelpTarget(value: string): HelpTarget | null {
   if (value in commandHelp) return value as HelpTarget;
-  if (value === "interactive" || value === "gain") return "pick";
+  if (value === "interactive" || value === "spoon") return "pick";
   if (value === "options" || value === "repo" || value === "query" || value === "url") return "run";
   return null;
 }
 
 export function printMainHelp(): void {
-  console.log(`${styles.title("gain")} ${styles.muted("explore open source repos and dependencies with agents")}`);
+  console.log(`${styles.title("spoon")} ${styles.muted("explore open source repos and dependencies with agents")}`);
   console.log("");
   console.log(styles.heading("Usage:"));
   printCommandRows([
-    { value: "gain", description: "Open a local repo interactively" },
+    { value: "spoon", description: "Open a local repo interactively" },
     {
-      value: "gain <org/repo>",
+      value: "spoon <org/repo>",
       description: "Open by exact match or url",
     },
     {
-      value: "gain <search>",
+      value: "spoon <search>",
       description: "Search github and interactively select",
     },
   ]);
@@ -226,15 +226,15 @@ export function printCommandHelp(
 
   if (showDefaultOnly) {
     if (target === "run") {
-      noteRows.push("Run `gain <org/repo> --help` to see additional usage forms.");
+      noteRows.push("Run `spoon <org/repo> --help` to see additional usage forms.");
     } else {
-      noteRows.push(`Run \`gain ${target} --help\` to see additional usage forms.`);
+      noteRows.push(`Run \`spoon ${target} --help\` to see additional usage forms.`);
     }
   }
 
   const headerLabel =
     target === "pick"
-      ? styles.label("gain")
+      ? styles.label("spoon")
       : usagePrefix(usageRows[0]?.value ?? target);
 
   console.log(

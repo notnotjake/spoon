@@ -31,9 +31,9 @@ function formatMs(ms: number): string {
 
 const DEFAULT_TTL = parseMs("14d");
 const DEFAULT_DIR = "~/ai-scratch/gh";
-const CONFIG_PATH = join(os.homedir(), ".config", "gain", "config.json");
-const LOG_PATH = join(os.homedir(), ".config", "gain", "history.jsonl");
-const META_FILENAME = ".gain.json";
+const CONFIG_PATH = join(os.homedir(), ".config", "spoon", "config.json");
+const LOG_PATH = join(os.homedir(), ".config", "spoon", "history.jsonl");
+const META_FILENAME = ".spoon.json";
 const COMMANDS = new Set(["config", "remove", "ls"]);
 const DEFAULT_LAUNCH: Record<string, string> = {
   c: "claude",
@@ -52,7 +52,7 @@ const styles = {
   bold: (text: string) => kleur.bold(text),
 };
 
-type GainConfig = {
+type SpoonConfig = {
   launch: Record<string, string>;
   ttlMs: number;
   baseDir: string;
@@ -76,7 +76,7 @@ function logLine(line: string) {
 }
 
 function logInfo(message: string) {
-  logLine(`${styles.title("gain")} ${message}`);
+  logLine(`${styles.title("spoon")} ${message}`);
 }
 
 function logWarn(message: string) {
@@ -100,8 +100,8 @@ function ensureDir(path: string) {
   }
 }
 
-function readConfig(): GainConfig {
-  const base: GainConfig = {
+function readConfig(): SpoonConfig {
+  const base: SpoonConfig = {
     launch: { ...DEFAULT_LAUNCH },
     ttlMs: DEFAULT_TTL,
     baseDir: expandHome(DEFAULT_DIR),
@@ -505,7 +505,7 @@ function readHistory(): HistoryEntry[] {
 }
 
 function appendHistory(repoFullName: string) {
-  ensureDir(join(os.homedir(), ".config", "gain"));
+  ensureDir(join(os.homedir(), ".config", "spoon"));
   const entry: HistoryEntry = {
     repoFullName,
     timestamp: new Date().toISOString(),
@@ -724,7 +724,7 @@ async function removeRepos(baseDir: string, ttlMs: number) {
   outro(`Removed ${removed.join(", ")}`);
 }
 
-function resolveDefaultLaunchAlias(config: GainConfig) {
+function resolveDefaultLaunchAlias(config: SpoonConfig) {
   const aliases = Object.keys(config.launch);
   if (aliases.length === 0) {
     throw new Error("No launch aliases configured. Add at least one entry to config.launch.");
@@ -732,7 +732,7 @@ function resolveDefaultLaunchAlias(config: GainConfig) {
   return aliases[0];
 }
 
-function resolveLaunchTarget(config: GainConfig, requestedAlias?: string, launchCommand?: string[]) {
+function resolveLaunchTarget(config: SpoonConfig, requestedAlias?: string, launchCommand?: string[]) {
   if (launchCommand && launchCommand.length > 0) {
     return {
       name: launchCommand[0],
@@ -963,13 +963,13 @@ function updateMetaAccess(meta: RepoMeta, branch: string) {
   };
 }
 
-async function runGain(command: string, positional: string[], options: Record<string, string>, launchCommand: string[]) {
+async function runSpoon(command: string, positional: string[], options: Record<string, string>, launchCommand: string[]) {
   if (command === "config") {
     const hasExtraPositional = positional.length > 1;
     const optionKeys = Object.keys(options);
     const hasUnexpectedOption = optionKeys.length > 0;
     if (hasExtraPositional || hasUnexpectedOption) {
-      throw new Error("Config command supports only: 'gain config'.");
+      throw new Error("Config command supports only: 'spoon config'.");
     }
 
     if (!existsSync(CONFIG_PATH)) {
@@ -1047,7 +1047,7 @@ async function runGain(command: string, positional: string[], options: Record<st
     const entries = collectRepos(config.baseDir);
     if (entries.length === 0) {
       logInfo(`No local repos found in ${styles.muted(config.baseDir)}.`);
-      logInfo(`Run ${styles.label("gain")} ${styles.muted("<org/repo|url|search>")} to clone one first.`);
+      logInfo(`Run ${styles.label("spoon")} ${styles.muted("<org/repo|url|search>")} to clone one first.`);
       return;
     }
 
@@ -1089,7 +1089,7 @@ async function handleRepo({
   repo: { owner: string; repo: string; url: string };
   target: { name: string; command: string };
   branchOverride?: string;
-  config: GainConfig;
+  config: SpoonConfig;
 }) {
   const targetDir = repoDir(config.baseDir, repo.owner, repo.repo);
   ensureDir(join(config.baseDir, repo.owner));
@@ -1168,7 +1168,7 @@ async function main() {
     }
 
     if (argv.length > 2) {
-      logLine("Usage: gain help [command]");
+      logLine("Usage: spoon help [command]");
       process.exit(1);
     }
 
@@ -1204,7 +1204,7 @@ async function main() {
     : (COMMANDS.has(positional[0]) ? positional[0] : "run");
 
   try {
-    await runGain(normalizedCommand, positional, options, launchCommand);
+    await runSpoon(normalizedCommand, positional, options, launchCommand);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     logError(message);

@@ -1,9 +1,9 @@
 {
-  "name": "gain",
+  "name": "spoon",
   "version": "0.1.0",
   "type": "module",
   "bin": {
-    "gain": "src/index.ts"
+    "spoon": "src/index.ts"
   },
   "dependencies": {
     "@clack/prompts": "^0.7.0",

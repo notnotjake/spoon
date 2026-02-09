@@ -1,6 +1,6 @@
-# gain
+# spoon
 
-`gain` helps you explore open source repos and dependencies with agents.
+`spoon` helps you explore open source repos and dependencies with agents.
 
 It removes friction from finding a repo, cloning or opening it, and launching your preferred agent CLI in the project immediately.
 
@@ -30,17 +30,17 @@ bun link
 
 | Command                                              | Description                                        |
 | ---------------------------------------------------- | -------------------------------------------------- |
-| `gain`                                               | Open a local repo interactively.                   |
-| `gain <org/repo>`                                    | Open by exact match.                               |
-| `gain <url>`                                         | Open by full GitHub URL.                           |
-| `gain <search>`                                      | Search GitHub and select interactively.            |
-| `gain <org/repo> [-l <alias>] [-b <branch>]`        | Open with launch alias and/or branch override.     |
-| `gain <org/repo> [-- <command...>]`                 | Override launch command for one run.               |
-| `gain ls`                                            | List local repos and history entries.              |
-| `gain remove`                                        | Interactively select local repos to remove.        |
-| `gain config`                                        | Open config file in your system default app.       |
-| `gain help [command]`                                | Show help.                                         |
-| `gain <command> --help`                              | Show command-specific help.                        |
+| `spoon`                                               | Open a local repo interactively.                   |
+| `spoon <org/repo>`                                    | Open by exact match.                               |
+| `spoon <url>`                                         | Open by full GitHub URL.                           |
+| `spoon <search>`                                      | Search GitHub and select interactively.            |
+| `spoon <org/repo> [-l <alias>] [-b <branch>]`        | Open with launch alias and/or branch override.     |
+| `spoon <org/repo> [-- <command...>]`                 | Override launch command for one run.               |
+| `spoon ls`                                            | List local repos and history entries.              |
+| `spoon remove`                                        | Interactively select local repos to remove.        |
+| `spoon config`                                        | Open config file in your system default app.       |
+| `spoon help [command]`                                | Show help.                                         |
+| `spoon <command> --help`                              | Show command-specific help.                        |
 
 ### Open repos
 
@@ -51,13 +51,13 @@ Description: Open a local repo from an interactive picker.
 Syntax:
 
 ```bash
-gain
+spoon
 ```
 
 Example:
 
 ```bash
-gain
+spoon
 ```
 
 **Open by exact repo or URL**
@@ -67,15 +67,15 @@ Description: Open or clone directly using exact `org/repo` or full URL.
 Syntax:
 
 ```bash
-gain <org/repo>
-gain <url>
+spoon <org/repo>
+spoon <url>
 ```
 
 Examples:
 
 ```bash
-gain sveltejs/kit
-gain https://github.com/sveltejs/svelte
+spoon sveltejs/kit
+spoon https://github.com/sveltejs/svelte
 ```
 
 **Search and select from GitHub**
@@ -85,13 +85,13 @@ Description: Search GitHub repos, then pick one interactively.
 Syntax:
 
 ```bash
-gain <search>
+spoon <search>
 ```
 
 Example:
 
 ```bash
-gain svelte
+spoon svelte
 ```
 
 **Use launch, branch, and command overrides**
@@ -101,17 +101,17 @@ Description: Control how the selected repo is launched.
 Syntax:
 
 ```bash
-gain <org/repo> -l <alias>
-gain <org/repo> -b <branch>
-gain <org/repo> -- <command...>
+spoon <org/repo> -l <alias>
+spoon <org/repo> -b <branch>
+spoon <org/repo> -- <command...>
 ```
 
 Examples:
 
 ```bash
-gain sveltejs/kit -l x
-gain sveltejs/kit -b next
-gain sveltejs/kit -- claude --continue
+spoon sveltejs/kit -l x
+spoon sveltejs/kit -b next
+spoon sveltejs/kit -- claude --continue
 ```
 
 ### Manage local repos
@@ -123,13 +123,13 @@ Description: Print locally available repos and historical repos no longer presen
 Syntax:
 
 ```bash
-gain ls
+spoon ls
 ```
 
 Example:
 
 ```bash
-gain ls
+spoon ls
 ```
 
 **Remove repos**
@@ -139,29 +139,29 @@ Description: Interactively select one or more local repos to remove.
 Syntax:
 
 ```bash
-gain remove
+spoon remove
 ```
 
 Example:
 
 ```bash
-gain remove
+spoon remove
 ```
 
 **Open config**
 
-Description: Open `gain` config file in your default system app.
+Description: Open `spoon` config file in your default system app.
 
 Syntax:
 
 ```bash
-gain config
+spoon config
 ```
 
 Example:
 
 ```bash
-gain config
+spoon config
 ```
 
 ### Help
@@ -173,14 +173,14 @@ Description: Show global help or command-specific help.
 Syntax:
 
 ```bash
-gain help [command]
-gain <command> --help
+spoon help [command]
+spoon <command> --help
 ```
 
 Example:
 
 ```bash
-gain ls --help
+spoon ls --help
 ```
 
 ## Configuration
@@ -188,7 +188,7 @@ gain ls --help
 Config path:
 
 ```bash
-~/.config/gain/config.json
+~/.config/spoon/config.json
 ```
 
 Example config:

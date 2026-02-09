@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "gain",
+      "name": "spoon",
       "dependencies": {
         "@clack/prompts": "^0.7.0",
         "kleur": "^4.1.5",
