@@ -197,8 +197,14 @@ Example config:
 {
   "launch": {
     "c": "claude",
-    "x": "codex",
-    "t": "tmux new -A -s ai && claude"
+    "x": {
+      "name": "Codex",
+      "command": "codex"
+    },
+    "t": {
+      "name": "AI Tmux",
+      "command": "tmux new -A -s ai && claude"
+    }
   },
   "ttlMs": 1209600000,
   "baseDir": "~/ai-scratch/gh"
@@ -208,6 +214,8 @@ Example config:
 Notes:
 
 - Default launch alias is the first key in `launch`.
+- Launch entries support both `alias: command` and `alias: { "name": "...", "command": "..." }`.
+- For `alias: command`, the launch name is inferred from the command (for example, `"x": "codex"` shows `Codex`).
 - Repos are purged by TTL on invocation after local repo count grows (10+ repos).
 
 ## License

@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "fs";
-import { join, resolve } from "path";
+import { basename, join, resolve } from "path";
 import os from "os";
 import readline from "readline";
 import kleur from "kleur";
@@ -35,9 +35,16 @@ const CONFIG_PATH = join(os.homedir(), ".config", "spoon", "config.json");
 const LOG_PATH = join(os.homedir(), ".config", "spoon", "history.jsonl");
 const META_FILENAME = ".spoon.json";
 const COMMANDS = new Set(["config", "remove", "ls"]);
-const DEFAULT_LAUNCH: Record<string, string> = {
-  c: "claude",
-  x: "codex",
+type LaunchTarget = {
+  name: string;
+  command: string;
+};
+
+type LaunchConfig = Record<string, LaunchTarget>;
+
+const DEFAULT_LAUNCH: LaunchConfig = {
+  c: { name: "Claude", command: "claude" },
+  x: { name: "Codex", command: "codex" },
 };
 
 const styles = {
@@ -53,7 +60,7 @@ const styles = {
 };
 
 type SpoonConfig = {
-  launch: Record<string, string>;
+  launch: LaunchConfig;
   ttlMs: number;
   baseDir: string;
 };
@@ -94,6 +101,28 @@ function expandHome(value: string) {
   return value;
 }
 
+function deriveLaunchName(command: string, fallback = "Launch") {
+  const trimmed = command.trim();
+  if (!trimmed) return fallback;
+
+  const tokens = trimmed.split(/\s+/);
+  let executable = "";
+  for (const token of tokens) {
+    if (/^[A-Za-z_][A-Za-z0-9_]*=.*/.test(token)) continue;
+    executable = token;
+    break;
+  }
+
+  const token = executable || tokens[0] || "";
+  const commandName = basename(token.replace(/^['"`]+|['"`]+$/g, "")).replace(/\.(cmd|exe|bat)$/i, "");
+  const words = commandName
+    .split(/[^A-Za-z0-9]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1));
+
+  return words.join(" ") || fallback;
+}
+
 function ensureDir(path: string) {
   if (!existsSync(path)) {
     mkdirSync(path, { recursive: true });
@@ -113,14 +142,32 @@ function readConfig(): SpoonConfig {
 
   try {
     const data = JSON.parse(readFileSync(CONFIG_PATH, "utf8")) as Record<string, unknown>;
-    const configuredLaunch: Record<string, string> = {};
+    const configuredLaunch: LaunchConfig = {};
     if (typeof data.launch === "object" && data.launch !== null) {
-      for (const [rawName, rawCommand] of Object.entries(data.launch as Record<string, unknown>)) {
-        if (typeof rawCommand !== "string") continue;
-        const name = rawName.trim();
-        const command = rawCommand.trim();
-        if (!name || !command) continue;
-        configuredLaunch[name] = command;
+      for (const [rawAlias, rawLaunchValue] of Object.entries(data.launch as Record<string, unknown>)) {
+        const alias = rawAlias.trim();
+        if (!alias) continue;
+
+        if (typeof rawLaunchValue === "string") {
+          const command = rawLaunchValue.trim();
+          if (!command) continue;
+          configuredLaunch[alias] = {
+            name: deriveLaunchName(command, alias),
+            command,
+          };
+          continue;
+        }
+
+        if (typeof rawLaunchValue === "object" && rawLaunchValue !== null) {
+          const launchValue = rawLaunchValue as Record<string, unknown>;
+          const rawName = typeof launchValue.name === "string" ? launchValue.name.trim() : "";
+          const command = typeof launchValue.command === "string" ? launchValue.command.trim() : "";
+          if (!command) continue;
+          configuredLaunch[alias] = {
+            name: rawName || deriveLaunchName(command, alias),
+            command,
+          };
+        }
       }
     }
     return {
@@ -734,9 +781,10 @@ function resolveDefaultLaunchAlias(config: SpoonConfig) {
 
 function resolveLaunchTarget(config: SpoonConfig, requestedAlias?: string, launchCommand?: string[]) {
   if (launchCommand && launchCommand.length > 0) {
+    const command = launchCommand.join(" ").trim();
     return {
-      name: launchCommand[0],
-      command: launchCommand.join(" "),
+      name: deriveLaunchName(command, launchCommand[0]),
+      command,
     };
   }
 
@@ -745,12 +793,16 @@ function resolveLaunchTarget(config: SpoonConfig, requestedAlias?: string, launc
     throw new Error("Launch alias is required.");
   }
 
-  const command = config.launch[alias]?.trim();
+  const configuredLaunch = config.launch[alias];
+  const command = configuredLaunch?.command.trim();
   if (!command) {
     throw new Error(`Unknown launch alias "${alias}". Add it to config.launch.`);
   }
 
-  return { name: alias, command };
+  return {
+    name: configuredLaunch.name.trim() || deriveLaunchName(command, alias),
+    command,
+  };
 }
 
 async function commandExists(command: string) {
@@ -772,7 +824,7 @@ async function recoverLeadingDoubleDash(
   command: string,
   positional: string[],
   launchCommand: string[],
-  launchAliases: Record<string, string>,
+  launchAliases: LaunchConfig,
 ): Promise<{ command: string; positional: string[]; launchCommand: string[] }> {
   if (command !== "run") {
     return { command, positional, launchCommand };
@@ -792,7 +844,7 @@ async function recoverLeadingDoubleDash(
   if (positional.length === 1) {
     const single = positional[0].trim();
     const aliasMatch = Object.prototype.hasOwnProperty.call(launchAliases, single);
-    const commandMatch = Object.values(launchAliases).some((value) => value === single);
+    const commandMatch = Object.values(launchAliases).some((value) => value.command === single);
     if (!aliasMatch && !commandMatch) {
       return { command, positional, launchCommand };
     }
@@ -946,7 +998,7 @@ async function pullRepo(dir: string, branch: string) {
   await runCommand("git", ["pull", "--ff-only"], { cwd: dir });
 }
 
-async function launchTarget(target: { name: string; command: string }, cwd: string) {
+async function launchTarget(target: LaunchTarget, cwd: string) {
   const detail = target.command === target.name ? target.name : `${target.name} (${target.command})`;
   logInfo(`${styles.label("open")} ${styles.muted(`with ${detail}`)}`);
   const exitCode = await runInteractiveShell(target.command, { cwd });
@@ -1087,7 +1139,7 @@ async function handleRepo({
   config,
 }: {
   repo: { owner: string; repo: string; url: string };
-  target: { name: string; command: string };
+  target: LaunchTarget;
   branchOverride?: string;
   config: SpoonConfig;
 }) {
