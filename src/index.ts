@@ -382,6 +382,25 @@ function formatDate(value: string) {
   return date.toLocaleString();
 }
 
+function formatShortDate(value: string) {
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) {
+    return "Unknown";
+  }
+
+  const now = new Date();
+  const sameYear = date.getFullYear() === now.getFullYear();
+  const month = date.getMonth() + 1;
+  const day = date.getDate();
+  const year = date.getFullYear();
+  const hour24 = date.getHours();
+  const hour12 = hour24 % 12 === 0 ? 12 : hour24 % 12;
+  const minute = String(date.getMinutes()).padStart(2, "0");
+  const meridiem = hour24 >= 12 ? "PM" : "AM";
+  const dayPart = sameYear ? `${month}/${day}` : `${month}/${day}/${year}`;
+  return `${dayPart} ${hour12}:${minute}${meridiem}`;
+}
+
 function padCell(value: string, width: number) {
   return value.padEnd(width, " ");
 }
@@ -725,24 +744,6 @@ async function readSingleKey(prompt: string) {
   });
 }
 
-async function confirm(prompt: string) {
-  const line = await promptLine(`${prompt} ${styles.muted("[y/N]")}: `);
-  return line.trim().toLowerCase().startsWith("y");
-}
-
-async function chooseUpdateMode() {
-  const selection = await fzfSelect([
-    "Pull latest",
-    "Reclone fresh",
-  ], ["--prompt", "Update > "]);
-
-  if (!selection) {
-    throw new Error("Update canceled.");
-  }
-
-  return selection.startsWith("Pull") ? "pull" : "reclone";
-}
-
 async function cloneRepo(repoUrl: string, branch: string, targetDir: string) {
   ensureDir(resolve(targetDir, ".."));
   logInfo(`${styles.label("clone")} ${styles.muted(repoUrl)}`);
@@ -750,6 +751,81 @@ async function cloneRepo(repoUrl: string, branch: string, targetDir: string) {
   await runCommand("git", ["clone", "--branch", branch, "--single-branch", repoUrl, targetDir]);
   const elapsed = Date.now() - start;
   logInfo(`${styles.label("cloned")} ${styles.muted(`in ${formatMs(elapsed)}`)}`);
+}
+
+async function refExists(dir: string, ref: string) {
+  try {
+    await runCommand("git", ["show-ref", "--verify", ref], { cwd: dir });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function getCurrentBranch(dir: string) {
+  try {
+    const branch = await runCommand("git", ["branch", "--show-current"], { cwd: dir });
+    return branch || null;
+  } catch {
+    return null;
+  }
+}
+
+async function getLastCommitDate(dir: string, ref: string) {
+  try {
+    const isoDate = await runCommand("git", ["log", "-1", "--format=%cI", ref], { cwd: dir });
+    return isoDate || null;
+  } catch {
+    return null;
+  }
+}
+
+type RepoStatusInfo = {
+  display: string;
+  behind: number | null;
+};
+
+async function describeRepoStatus(dir: string, branch: string, meta: RepoMeta | null): Promise<RepoStatusInfo> {
+  const clonedSegment = meta?.clonedAt ? `Cloned ${formatShortDate(meta.clonedAt)}` : null;
+  const localRef = (await refExists(dir, `refs/heads/${branch}`)) ? `refs/heads/${branch}` : "HEAD";
+
+  try {
+    await runCommand("git", ["fetch", "origin", branch], { cwd: dir });
+    const remoteRef = `refs/remotes/origin/${branch}`;
+    if (!(await refExists(dir, remoteRef))) {
+      const segments: string[] = [];
+      if (clonedSegment) segments.push(clonedSegment);
+      segments.push(styles.orange("Failed to check remote branch"));
+      return { display: segments.join(" - "), behind: null };
+    }
+
+    const behindRaw = await runCommand("git", ["rev-list", "--count", `${localRef}..${remoteRef}`], { cwd: dir });
+    const behind = Number.parseInt(behindRaw, 10);
+    const remoteUpdated = await getLastCommitDate(dir, remoteRef);
+
+    if (Number.isFinite(behind) && behind <= 0) {
+      return { display: styles.green("Up to date"), behind: 0 };
+    }
+
+    const segments: string[] = [];
+    let commitsBehind: number | null = null;
+    if (Number.isFinite(behind) && behind > 0) {
+      segments.push(`${behind} ${behind === 1 ? "commit" : "commits"} behind`);
+      commitsBehind = behind;
+    } else {
+      segments.push("Behind remote");
+    }
+    if (clonedSegment) segments.push(clonedSegment);
+    if (remoteUpdated) segments.push(`Updated ${formatShortDate(remoteUpdated)}`);
+    return { display: segments.join(" - "), behind: commitsBehind };
+  } catch {
+    const localUpdated = await getLastCommitDate(dir, localRef);
+    const segments: string[] = [];
+    if (clonedSegment) segments.push(clonedSegment);
+    if (localUpdated) segments.push(`Updated ${formatShortDate(localUpdated)}`);
+    segments.push(styles.orange("Failed to fetch origin"));
+    return { display: segments.join(" - "), behind: null };
+  }
 }
 
 async function checkoutBranch(dir: string, branch: string) {
@@ -926,61 +1002,31 @@ async function handleRepo({
     const meta = readMeta(targetDir);
     if (meta) {
       clonedAt = meta.clonedAt;
-      logInfo(`${styles.label("found")} ${repo.owner}/${repo.repo} ${styles.muted(`(cloned ${formatDate(meta.clonedAt)})`)}`);
-    } else {
-      logInfo(`${styles.label("found")} ${repo.owner}/${repo.repo}`);
     }
 
     if (!branch) {
       branch = meta?.branch ?? undefined;
     }
+    const statusBranch = branch ?? (await getCurrentBranch(targetDir)) ?? "main";
+    branch = statusBranch;
+    const status = await describeRepoStatus(targetDir, statusBranch, meta);
+    logInfo(`${styles.label("found")} ${repo.owner}/${repo.repo} ${styles.muted("•")} ${status.display}`);
 
-    const actionKey = await readSingleKey(`${kleur.green(`${kleur.bold("Enter")} Open`)}  ${styles.muted("·")}  ${kleur.yellow(`${kleur.bold("Tab")} Edit`)} `);
+    if (status.behind === 0) {
+      await checkoutBranch(targetDir, branch ?? "main");
+    } else {
+    const actionKey = await readSingleKey(`${kleur.green(`${kleur.bold("Enter")} Launch ${kleur.bold(provider)}`)}  ${styles.muted("·")}  ${kleur.yellow(`${kleur.bold("Tab")} Update`)} `);
     logLine("");
     const key = actionKey[0];
-    const wantsEdit = key === "\t" || key?.toLowerCase() === "e";
+    const wantsUpdate = key === "\t" || key?.toLowerCase() === "u";
 
-    if (wantsEdit) {
-      const actions = await multiselect({
-        message: "Edit options",
-        options: [
-          { value: "update", label: "Update repo" },
-          { value: "branch", label: "Change branch" },
-        ],
-        required: false,
-      });
-
-      if (isCancel(actions)) {
-        cancel("Canceled.");
-        return;
-      }
-
-      const selected = actions as string[];
-      const wantsUpdate = selected.includes("update");
-      const wantsBranch = selected.includes("branch") || Boolean(branchOverride);
-
-      if (wantsBranch || !branch) {
-        branch = await selectBranch(repo.url, branchOverride ?? branch ?? undefined);
-      }
-
-      if (wantsUpdate) {
-        const mode = await chooseUpdateMode();
-        if (mode === "reclone") {
-          removeDir(targetDir);
-          await cloneRepo(repo.url, branch ?? "main", targetDir);
-          clonedAt = new Date().toISOString();
-          appendHistory(`${repo.owner}/${repo.repo}`);
-        } else {
-          await pullRepo(targetDir, branch ?? "main");
-        }
-      } else {
-        await checkoutBranch(targetDir, branch ?? "main");
+    if (wantsUpdate) {
+      if (status.behind !== 0) {
+        await pullRepo(targetDir, branch ?? "main");
       }
     } else {
-      if (!branch) {
-        branch = await selectBranch(repo.url, branchOverride);
-      }
       await checkoutBranch(targetDir, branch ?? "main");
+    }
     }
   } else {
     branch = await selectBranch(repo.url, branchOverride);
