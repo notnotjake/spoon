@@ -28,7 +28,7 @@ type CommandHelpPrintOptions = {
   detailed?: boolean;
 };
 
-const commandHelp: Record<"pick" | "run" | "ls" | "remove" | "config", CommandHelp> = {
+const commandHelp: Record<"pick" | "run" | "add" | "ls" | "remove" | "config", CommandHelp> = {
   pick: {
     summary: "Open local repos interactively",
     usage: [
@@ -76,6 +76,36 @@ const commandHelp: Record<"pick" | "run" | "ls" | "remove" | "config", CommandHe
       "Use exact org/repo, full GitHub URL, or a search string.",
     ],
   },
+  add: {
+    summary: "Add a repo but dont launch it",
+    usage: [
+      {
+        value: "add <org/repo>",
+        description: "Resolve or clone a repo by exact org/repo.",
+      },
+      {
+        value: "add <url>",
+        description: "Resolve or clone a repo from a full GitHub URL.",
+      },
+      {
+        value: "add <search>",
+        description: "Search for a repo and clone/select it without launching.",
+      },
+      {
+        value: "add <org/repo> [-b <branch>]",
+        description: "Resolve or clone a repo with an optional branch override.",
+        options: [
+          {
+            value: "[-b, --branch] <branch>",
+            description: "Clone or checkout a specific branch.",
+          },
+        ],
+      },
+    ],
+    notes: [
+      "Uses the same repo resolution flow as `spoon <query>`, but skips launching an agent.",
+    ],
+  },
   ls: {
     summary: "List local and historical repos",
     usage: [
@@ -108,7 +138,7 @@ const commandHelp: Record<"pick" | "run" | "ls" | "remove" | "config", CommandHe
 export type HelpTarget = keyof typeof commandHelp;
 export type NamedCommand = Exclude<HelpTarget, "pick" | "run">;
 
-const namedCommands: readonly NamedCommand[] = ["ls", "remove", "config"];
+const namedCommands: readonly NamedCommand[] = ["ls", "add", "remove", "config"];
 
 function formatCommandValue(value: string): string {
   return value
@@ -200,6 +230,7 @@ export function printMainHelp(): void {
   console.log(styles.heading("Commands:"));
   printCommandRows([
     { value: "ls", description: "List available local repos and history" },
+    { value: "add <repo>", description: "Add a repo but dont launch it" },
     { value: "remove", description: "Select local repos to remove" },
     { value: "config", description: "Open config file" },
   ]);

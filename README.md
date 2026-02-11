@@ -37,6 +37,7 @@ bun link
 | `spoon <org/repo> [-l <alias>] [-b <branch>]`        | Open with launch alias and/or branch override.     |
 | `spoon <org/repo> [-- <command...>]`                 | Override launch command for one run.               |
 | `spoon ls`                                            | List local repos and history entries.              |
+| `spoon add <repo> [-b <branch>]`                      | Resolve or clone a repo without launching.         |
 | `spoon remove`                                        | Interactively select local repos to remove.        |
 | `spoon config`                                        | Open config file in your system default app.       |
 | `spoon help [command]`                                | Show help.                                         |
@@ -115,6 +116,28 @@ spoon sveltejs/kit -- claude --continue
 ```
 
 ### Manage local repos
+
+**Add repo without launching**
+
+Description: Resolve or clone a repo using the same lookup flow as `spoon <query>`, but do not launch an agent process.
+
+Syntax:
+
+```bash
+spoon add <org/repo>
+spoon add <url>
+spoon add <search>
+spoon add <org/repo> -b <branch>
+```
+
+Examples:
+
+```bash
+spoon add sveltejs/kit
+spoon add https://github.com/sveltejs/svelte
+spoon add svelte
+spoon add sveltejs/kit -b next
+```
 
 **List repos**
 

@@ -34,7 +34,7 @@ const DEFAULT_DIR = "~/ai-scratch/gh";
 const CONFIG_PATH = join(os.homedir(), ".config", "spoon", "config.json");
 const LOG_PATH = join(os.homedir(), ".config", "spoon", "history.jsonl");
 const META_FILENAME = ".spoon.json";
-const COMMANDS = new Set(["config", "remove", "ls"]);
+const COMMANDS = new Set(["config", "remove", "ls", "add"]);
 type LaunchTarget = {
   name: string;
   command: string;
@@ -1093,13 +1093,12 @@ async function runSpoon(command: string, positional: string[], options: Record<s
     return;
   }
 
-  const target = resolveLaunchTarget(config, options.launch, launchCommand);
-
   if (command === "pick") {
+    const target = resolveLaunchTarget(config, options.launch, launchCommand);
     const entries = collectRepos(config.baseDir);
     if (entries.length === 0) {
       logInfo(`No local repos found in ${styles.muted(config.baseDir)}.`);
-      logInfo(`Run ${styles.label("spoon")} ${styles.muted("<org/repo|url|search>")} to clone one first.`);
+      logInfo(`Run ${styles.label("spoon")} ${styles.muted("<repo>")} to clone one first.`);
       return;
     }
 
@@ -1118,17 +1117,23 @@ async function runSpoon(command: string, positional: string[], options: Record<s
       url: selected.meta.repoUrl || parsed.url,
     };
 
-    await handleRepo({ repo, target, branchOverride: options.branch, config });
+    await handleRepo({ repo, target, branchOverride: options.branch, config, shouldLaunch: true });
     return;
   }
 
-  if (command === "run") {
-    const repoInput = positional.join(" ").trim();
+  if (command === "run" || command === "add") {
+    const isAdd = command === "add";
+    if (isAdd && (options.launch || launchCommand.length > 0)) {
+      throw new Error("Add command does not support launch overrides.");
+    }
+
+    const repoInput = (isAdd ? positional.slice(1) : positional).join(" ").trim();
     if (!repoInput) {
       throw new Error("Repository reference required.");
     }
     const repo = await resolveRepo(repoInput, config.baseDir);
-    await handleRepo({ repo, target, branchOverride: options.branch, config });
+    const target = isAdd ? undefined : resolveLaunchTarget(config, options.launch, launchCommand);
+    await handleRepo({ repo, target, branchOverride: options.branch, config, shouldLaunch: !isAdd });
   }
 }
 
@@ -1137,11 +1142,13 @@ async function handleRepo({
   target,
   branchOverride,
   config,
+  shouldLaunch,
 }: {
   repo: { owner: string; repo: string; url: string };
-  target: LaunchTarget;
+  target?: LaunchTarget;
   branchOverride?: string;
   config: SpoonConfig;
+  shouldLaunch: boolean;
 }) {
   const targetDir = repoDir(config.baseDir, repo.owner, repo.repo);
   ensureDir(join(config.baseDir, repo.owner));
@@ -1166,7 +1173,10 @@ async function handleRepo({
     if (status.behind === 0) {
       await checkoutBranch(targetDir, branch ?? "main");
     } else {
-      const actionKey = await readSingleKey(`${kleur.green(`${kleur.bold("Enter")} Launch ${kleur.bold(target.name)}`)}  ${styles.muted("·")}  ${kleur.yellow(`${kleur.bold("Tab")} Update`)} `);
+      const prompt = shouldLaunch
+        ? `${kleur.green(`${kleur.bold("Enter")} Launch ${kleur.bold(target?.name ?? "agent")}`)}  ${styles.muted("·")}  ${kleur.yellow(`${kleur.bold("Tab")} Update`)} `
+        : `${kleur.green(`${kleur.bold("Enter")} Keep current`)}  ${styles.muted("·")}  ${kleur.yellow(`${kleur.bold("Tab")} Update`)} `;
+      const actionKey = await readSingleKey(prompt);
       logLine("");
       const key = actionKey[0];
       const wantsUpdate = key === "\t" || key?.toLowerCase() === "u";
@@ -1195,6 +1205,14 @@ async function handleRepo({
     lastAccess: now,
   };
   writeMeta(targetDir, meta);
+
+  if (!shouldLaunch) {
+    return;
+  }
+
+  if (!target) {
+    throw new Error("Launch target is required.");
+  }
 
   await launchTarget(target, targetDir);
 
