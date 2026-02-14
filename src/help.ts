@@ -28,7 +28,7 @@ type CommandHelpPrintOptions = {
   detailed?: boolean;
 };
 
-const commandHelp: Record<"pick" | "run" | "add" | "ls" | "remove" | "config", CommandHelp> = {
+const commandHelp: Record<"pick" | "run" | "add" | "context" | "ls" | "remove" | "config", CommandHelp> = {
   pick: {
     summary: "Open local repos interactively",
     usage: [
@@ -106,6 +106,40 @@ const commandHelp: Record<"pick" | "run" | "add" | "ls" | "remove" | "config", C
       "Uses the same repo resolution flow as `spoon <query>`, but skips launching an agent.",
     ],
   },
+  context: {
+    summary: "Link repos into the current project's .spoon directory",
+    usage: [
+      {
+        value: "context",
+        description: "Interactively select repos from history to link into .spoon/.",
+      },
+      {
+        value: "context <org/repo>",
+        description: "Create a context link at .spoon/<org>_<repo>.",
+      },
+      {
+        value: "context <repo> --name <name>",
+        description: "Create a context link at .spoon/<name>.",
+        options: [
+          {
+            value: "[--name, -n] <name>",
+            description: "Override link path with a single-segment name.",
+          },
+        ],
+      },
+      {
+        value: "context ls",
+        description: "List context links in the current project.",
+      },
+      {
+        value: "context remove [<repo-or-name>]",
+        description: "Remove context links by reference or interactive selection.",
+      },
+    ],
+    notes: [
+      "Context links are created in the current working directory under `.spoon/`.",
+    ],
+  },
   ls: {
     summary: "List local and historical repos",
     usage: [
@@ -138,7 +172,7 @@ const commandHelp: Record<"pick" | "run" | "add" | "ls" | "remove" | "config", C
 export type HelpTarget = keyof typeof commandHelp;
 export type NamedCommand = Exclude<HelpTarget, "pick" | "run">;
 
-const namedCommands: readonly NamedCommand[] = ["ls", "add", "remove", "config"];
+const namedCommands: readonly NamedCommand[] = ["ls", "add", "context", "remove", "config"];
 
 function formatCommandValue(value: string): string {
   return value
@@ -231,6 +265,7 @@ export function printMainHelp(): void {
   printCommandRows([
     { value: "ls", description: "List available local repos and history" },
     { value: "add <repo>", description: "Add a repo but dont launch it" },
+    { value: "context <repo>", description: "Link repo context into this project" },
     { value: "remove", description: "Select local repos to remove" },
     { value: "config", description: "Open config file" },
   ]);

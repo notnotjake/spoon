@@ -1,6 +1,18 @@
 #!/usr/bin/env bun
-import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "fs";
-import { basename, join, resolve } from "path";
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  readlinkSync,
+  rmdirSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "fs";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "path";
 import os from "os";
 import readline from "readline";
 import kleur from "kleur";
@@ -34,7 +46,8 @@ const DEFAULT_DIR = "~/ai-scratch/gh";
 const CONFIG_PATH = join(os.homedir(), ".config", "spoon", "config.json");
 const LOG_PATH = join(os.homedir(), ".config", "spoon", "history.jsonl");
 const META_FILENAME = ".spoon.json";
-const COMMANDS = new Set(["config", "remove", "ls", "add"]);
+const PROJECT_SPOON_DIR = ".spoon";
+const COMMANDS = new Set(["config", "remove", "ls", "add", "context"]);
 type LaunchTarget = {
   name: string;
   command: string;
@@ -76,6 +89,21 @@ type RepoMeta = {
 type RepoEntry = {
   path: string;
   meta: RepoMeta;
+};
+
+type ContextLinkEntry = {
+  linkPath: string;
+  relativeLinkPath: string;
+  targetPath: string;
+  repoFullName: string | null;
+  branch: string | null;
+  broken: boolean;
+};
+
+type ContextHistoryCandidate = {
+  repoFullName: string;
+  lastSeen: string;
+  isLocal: boolean;
 };
 
 function logLine(line: string) {
@@ -204,6 +232,11 @@ function parseArgs(argv: string[]) {
     }
     if (arg === "-b" || arg === "--branch") {
       options.branch = argv[i + 1];
+      i += 1;
+      continue;
+    }
+    if (arg === "-n" || arg === "--name") {
+      options.name = argv[i + 1];
       i += 1;
       continue;
     }
@@ -409,9 +442,7 @@ async function selectBranch(repoUrl: string, forcedBranch?: string) {
     return forcedBranch;
   }
 
-  const headInfo = await runCommand("git", ["ls-remote", "--symref", repoUrl, "HEAD"]);
-  const defaultMatch = headInfo.match(/ref: refs\/heads\/(\S+)/);
-  const defaultBranch = defaultMatch ? defaultMatch[1] : "main";
+  const defaultBranch = await getDefaultBranch(repoUrl);
 
   let refs = "";
   try {
@@ -445,6 +476,12 @@ async function selectBranch(repoUrl: string, forcedBranch?: string) {
   }
 
   return selection.split("\t")[0];
+}
+
+async function getDefaultBranch(repoUrl: string) {
+  const headInfo = await runCommand("git", ["ls-remote", "--symref", repoUrl, "HEAD"]);
+  const defaultMatch = headInfo.match(/ref: refs\/heads\/(\S+)/);
+  return defaultMatch ? defaultMatch[1] : "main";
 }
 
 function formatDate(value: string) {
@@ -527,6 +564,514 @@ function readMeta(dir: string): RepoMeta | null {
 
 function writeMeta(dir: string, meta: RepoMeta) {
   writeFileSync(metaPath(dir), JSON.stringify(meta, null, 2));
+}
+
+function toPortablePath(value: string) {
+  return value.replace(/\\/g, "/");
+}
+
+function toProjectRelativePath(path: string, projectDir = process.cwd()) {
+  const relativePath = relative(projectDir, path);
+  if (!relativePath || relativePath.startsWith("..") || isAbsolute(relativePath)) {
+    return path;
+  }
+  return toPortablePath(relativePath);
+}
+
+function getProjectSpoonDir(projectDir = process.cwd()) {
+  return join(projectDir, PROJECT_SPOON_DIR);
+}
+
+function isPathWithin(parent: string, child: string) {
+  const rel = relative(resolve(parent), resolve(child));
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+}
+
+function resolveRepoIdentity(targetPath: string, baseDir: string) {
+  const meta = readMeta(targetPath);
+  if (meta) {
+    return { repoFullName: meta.repoFullName, branch: meta.branch };
+  }
+
+  const rel = relative(resolve(baseDir), resolve(targetPath));
+  if (rel && !rel.startsWith("..") && !isAbsolute(rel)) {
+    const segments = rel.split(/[\\/]/).filter(Boolean);
+    if (segments.length >= 2) {
+      return { repoFullName: `${segments[0]}/${segments[1]}`, branch: null };
+    }
+  }
+
+  return { repoFullName: null, branch: null };
+}
+
+function collectContextLinks(projectDir: string, config: SpoonConfig) {
+  const spoonDir = getProjectSpoonDir(projectDir);
+  if (!existsSync(spoonDir)) {
+    return [] as ContextLinkEntry[];
+  }
+
+  const links: ContextLinkEntry[] = [];
+  const walk = (dir: string) => {
+    for (const dirent of readdirSync(dir, { withFileTypes: true })) {
+      const absolutePath = join(dir, dirent.name);
+
+      if (dirent.isSymbolicLink()) {
+        let targetPath = "";
+        let broken = false;
+        try {
+          const rawTarget = readlinkSync(absolutePath);
+          targetPath = isAbsolute(rawTarget) ? rawTarget : resolve(dirname(absolutePath), rawTarget);
+          broken = !existsSync(targetPath);
+        } catch {
+          broken = true;
+        }
+
+        const identity = broken
+          ? { repoFullName: null, branch: null }
+          : resolveRepoIdentity(targetPath, config.baseDir);
+
+        links.push({
+          linkPath: absolutePath,
+          relativeLinkPath: toProjectRelativePath(absolutePath, projectDir),
+          targetPath: targetPath || "(unresolvable target)",
+          repoFullName: identity.repoFullName,
+          branch: identity.branch,
+          broken,
+        });
+        continue;
+      }
+
+      if (dirent.isDirectory()) {
+        walk(absolutePath);
+      }
+    }
+  };
+
+  walk(spoonDir);
+  return links.sort((a, b) => a.relativeLinkPath.localeCompare(b.relativeLinkPath));
+}
+
+function pruneEmptyContextDirs(startDir: string, spoonDir: string) {
+  const resolvedSpoonDir = resolve(spoonDir);
+  let current = resolve(startDir);
+
+  while (isPathWithin(resolvedSpoonDir, current)) {
+    if (!existsSync(current)) {
+      if (current === resolvedSpoonDir) break;
+      current = resolve(current, "..");
+      continue;
+    }
+
+    const entries = readdirSync(current);
+    if (entries.length > 0) {
+      break;
+    }
+
+    try {
+      // `rmdirSync` is more reliable than `rmSync` for empty-dir cleanup on Bun/macOS.
+      rmdirSync(current);
+    } catch {
+      break;
+    }
+    if (current === resolvedSpoonDir) {
+      break;
+    }
+    current = resolve(current, "..");
+  }
+}
+
+function removeContextLink(linkPath: string, spoonDir: string) {
+  rmSync(linkPath, { force: true });
+  pruneEmptyContextDirs(dirname(linkPath), spoonDir);
+}
+
+function validateContextName(rawName: string) {
+  const name = rawName.trim();
+  if (!name) {
+    throw new Error("Context name cannot be empty.");
+  }
+  if (name === "." || name === ".." || name.includes("/") || name.includes("\\")) {
+    throw new Error("Context name must be a single path segment.");
+  }
+  return name;
+}
+
+function defaultContextName(owner: string, repo: string) {
+  const combined = `${owner}_${repo}`.trim();
+  return validateContextName(combined.replace(/[\\/]+/g, "_"));
+}
+
+function normalizeContextRef(rawRef: string) {
+  let value = rawRef.trim();
+  if (!value) return "";
+
+  if (value === PROJECT_SPOON_DIR) {
+    return "";
+  }
+  if (value.startsWith(`${PROJECT_SPOON_DIR}/`) || value.startsWith(`${PROJECT_SPOON_DIR}\\`)) {
+    return value.slice(PROJECT_SPOON_DIR.length + 1);
+  }
+  if (value.startsWith(`./${PROJECT_SPOON_DIR}/`) || value.startsWith(`.\\${PROJECT_SPOON_DIR}\\`)) {
+    return value.slice(PROJECT_SPOON_DIR.length + 3);
+  }
+
+  return value;
+}
+
+function collectContextHistoryCandidates(config: SpoonConfig) {
+  const localRepos = collectRepos(config.baseDir);
+  const localByName = new Map<string, RepoEntry>();
+  for (const entry of localRepos) {
+    const previous = localByName.get(entry.meta.repoFullName);
+    if (!previous) {
+      localByName.set(entry.meta.repoFullName, entry);
+      continue;
+    }
+
+    const previousTime = new Date(previous.meta.lastAccess).getTime();
+    const currentTime = new Date(entry.meta.lastAccess).getTime();
+    if (!Number.isFinite(previousTime) || currentTime > previousTime) {
+      localByName.set(entry.meta.repoFullName, entry);
+    }
+  }
+
+  const lastSeenByName = new Map<string, string>();
+  for (const entry of readHistory()) {
+    if (!parseRepoSlug(entry.repoFullName)) continue;
+    const previous = lastSeenByName.get(entry.repoFullName);
+    if (!previous) {
+      lastSeenByName.set(entry.repoFullName, entry.timestamp);
+      continue;
+    }
+    if (new Date(entry.timestamp).getTime() > new Date(previous).getTime()) {
+      lastSeenByName.set(entry.repoFullName, entry.timestamp);
+    }
+  }
+
+  for (const [repoFullName, entry] of localByName.entries()) {
+    if (!lastSeenByName.has(repoFullName)) {
+      lastSeenByName.set(repoFullName, entry.meta.lastAccess);
+    }
+  }
+
+  const candidates: ContextHistoryCandidate[] = [];
+  for (const [repoFullName, lastSeen] of lastSeenByName.entries()) {
+    candidates.push({
+      repoFullName,
+      lastSeen,
+      isLocal: localByName.has(repoFullName),
+    });
+  }
+
+  candidates.sort((a, b) => new Date(b.lastSeen).getTime() - new Date(a.lastSeen).getTime());
+  return candidates;
+}
+
+async function addProjectContextFromHistory(config: SpoonConfig) {
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    throw new Error("Interactive context selection requires a TTY. Use `spoon context <repo>` instead.");
+  }
+
+  const candidates = collectContextHistoryCandidates(config);
+  if (candidates.length === 0) {
+    logInfo("No repo history found. Open or add a repo first, then run `spoon context`.");
+    return;
+  }
+
+  type SelectOption = { value: string; label: string; hint?: string };
+  const localCandidates = candidates.filter((candidate) => candidate.isLocal);
+  const historyOnlyCandidates = candidates.filter((candidate) => !candidate.isLocal);
+  const options: SelectOption[] = [];
+
+  if (localCandidates.length > 0) {
+    options.push({ value: "_local_header", label: "── Local + History ──", hint: "" });
+    for (const candidate of localCandidates) {
+      options.push({
+        value: candidate.repoFullName,
+        label: candidate.repoFullName,
+        hint: `Last seen ${formatShortDate(candidate.lastSeen)}`,
+      });
+    }
+  }
+
+  if (historyOnlyCandidates.length > 0) {
+    options.push({ value: "_history_header", label: "── History (Not Local) ──", hint: "" });
+    for (const candidate of historyOnlyCandidates) {
+      options.push({
+        value: candidate.repoFullName,
+        label: candidate.repoFullName,
+        hint: `Last seen ${formatShortDate(candidate.lastSeen)}`,
+      });
+    }
+  }
+
+  const selection = await multiselect({
+    message: "Select repos to link into .spoon",
+    options,
+    required: false,
+  });
+
+  if (isCancel(selection)) {
+    cancel("Canceled.");
+    return;
+  }
+
+  const selectedRepos = (selection as string[]).filter((value) => !value.startsWith("_"));
+  if (selectedRepos.length === 0) {
+    outro("No context links added.");
+    return;
+  }
+
+  let addedCount = 0;
+  let existingCount = 0;
+  let failedCount = 0;
+
+  for (const repoFullName of selectedRepos) {
+    try {
+      await addProjectContextLink(repoFullName, config);
+      addedCount += 1;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.includes("Context link already exists:")) {
+        existingCount += 1;
+      } else {
+        failedCount += 1;
+      }
+      logWarn(`${repoFullName}: ${message}`);
+    }
+  }
+
+  const summaryParts = [
+    `Added ${addedCount} context link${addedCount === 1 ? "" : "s"}`,
+  ];
+  if (existingCount > 0) {
+    summaryParts.push(`skipped ${existingCount} existing`);
+  }
+  if (failedCount > 0) {
+    summaryParts.push(`${failedCount} failed`);
+  }
+  outro(summaryParts.join(", "));
+}
+
+async function ensureRepoForContext(
+  repo: { owner: string; repo: string; url: string },
+  config: SpoonConfig,
+) {
+  const targetDir = repoDir(config.baseDir, repo.owner, repo.repo);
+  ensureDir(join(config.baseDir, repo.owner));
+
+  const now = new Date().toISOString();
+  if (!existsSync(targetDir)) {
+    const branch = await getDefaultBranch(repo.url);
+    await cloneRepo(repo.url, branch, targetDir);
+    const meta: RepoMeta = {
+      repoUrl: repo.url,
+      repoFullName: `${repo.owner}/${repo.repo}`,
+      branch,
+      clonedAt: now,
+      lastAccess: now,
+    };
+    writeMeta(targetDir, meta);
+    appendHistory(meta.repoFullName);
+    return { path: targetDir, meta };
+  }
+
+  const existingMeta = readMeta(targetDir);
+  const branch = existingMeta?.branch ?? (await getCurrentBranch(targetDir)) ?? "main";
+  const meta: RepoMeta = {
+    repoUrl: repo.url,
+    repoFullName: `${repo.owner}/${repo.repo}`,
+    branch,
+    clonedAt: existingMeta?.clonedAt ?? now,
+    lastAccess: now,
+  };
+  writeMeta(targetDir, meta);
+  appendHistory(meta.repoFullName);
+  return { path: targetDir, meta };
+}
+
+function printContextLinks(links: ContextLinkEntry[]) {
+  if (links.length === 0) {
+    logInfo(`No context links found in ${styles.muted(toPortablePath(join(".", PROJECT_SPOON_DIR)))}.`);
+    return;
+  }
+
+  logLine(styles.label("Context"));
+  for (const link of links) {
+    const source = link.repoFullName ?? link.targetPath;
+    const branchSuffix = link.branch ? ` ${styles.muted(`(${link.branch})`)}` : "";
+    if (link.broken) {
+      logLine(`  ${styles.orange(link.relativeLinkPath)} ${styles.muted("->")} ${styles.orange("broken target")}`);
+      continue;
+    }
+    logLine(`  ${link.relativeLinkPath} ${styles.muted("->")} ${source}${branchSuffix}`);
+  }
+}
+
+async function addProjectContextLink(
+  repoInput: string,
+  config: SpoonConfig,
+  requestedName?: string,
+) {
+  const repo = await resolveRepo(repoInput, config.baseDir);
+  const ensured = await ensureRepoForContext(repo, config);
+
+  const projectDir = process.cwd();
+  const spoonDir = getProjectSpoonDir(projectDir);
+  ensureDir(spoonDir);
+
+  const name = requestedName
+    ? validateContextName(requestedName)
+    : defaultContextName(repo.owner, repo.repo);
+  const linkPath = join(spoonDir, name);
+
+  if (existsSync(linkPath)) {
+    throw new Error(`Context link already exists: ${toProjectRelativePath(linkPath, projectDir)}`);
+  }
+
+  ensureDir(dirname(linkPath));
+  symlinkSync(ensured.path, linkPath, "dir");
+
+  const displayPath = toProjectRelativePath(linkPath, projectDir);
+  logInfo(`${styles.label("context")} linked ${styles.muted(displayPath)} ${styles.muted("->")} ${styles.muted(ensured.meta.repoFullName)}`);
+}
+
+async function removeProjectContextLinks(
+  links: ContextLinkEntry[],
+  spoonDir: string,
+  removeRef?: string,
+) {
+  if (links.length === 0) {
+    logInfo(`No context links found in ${styles.muted(toPortablePath(join(".", PROJECT_SPOON_DIR)))}.`);
+    return;
+  }
+
+  if (removeRef) {
+    const normalizedRef = normalizeContextRef(removeRef);
+    if (!normalizedRef) {
+      throw new Error("Context reference required.");
+    }
+
+    const directMatches = links.filter((entry) => {
+      const relativeLinkPath = toPortablePath(relative(spoonDir, entry.linkPath));
+      return relativeLinkPath === toPortablePath(normalizedRef);
+    });
+
+    const matches = directMatches.length > 0
+      ? directMatches
+      : links.filter((entry) => entry.repoFullName?.toLowerCase() === normalizedRef.toLowerCase());
+
+    if (matches.length === 0) {
+      throw new Error(`No context link matched "${removeRef}".`);
+    }
+
+    for (const match of matches) {
+      removeContextLink(match.linkPath, spoonDir);
+    }
+
+    if (matches.length === 1) {
+      outro(`Removed ${matches[0].relativeLinkPath}`);
+    } else {
+      outro(`Removed ${matches.length} links for ${normalizedRef}`);
+    }
+    return;
+  }
+
+  const selection = await multiselect({
+    message: "Select context links to remove",
+    options: links.map((entry) => ({
+      value: entry.linkPath,
+      label: entry.relativeLinkPath,
+      hint: entry.repoFullName ?? entry.targetPath,
+    })),
+    required: false,
+  });
+
+  if (isCancel(selection)) {
+    cancel("Canceled.");
+    return;
+  }
+
+  const paths = selection as string[];
+  if (paths.length === 0) {
+    outro("No context links removed.");
+    return;
+  }
+
+  for (const path of paths) {
+    removeContextLink(path, spoonDir);
+  }
+
+  outro(`Removed ${paths.length} context link${paths.length === 1 ? "" : "s"}.`);
+}
+
+async function runContextCommand(
+  positional: string[],
+  options: Record<string, string>,
+  launchCommand: string[],
+  config: SpoonConfig,
+) {
+  if (Object.prototype.hasOwnProperty.call(options, "name") && !options.name) {
+    throw new Error("Option --name requires a value.");
+  }
+
+  const args = positional.slice(1);
+  const action = args[0];
+
+  if (!action) {
+    if (options.launch || options.branch || launchCommand.length > 0) {
+      throw new Error("Context command does not support launch or branch options.");
+    }
+    if (options.name) {
+      throw new Error("Context command without a repo does not support --name.");
+    }
+    await addProjectContextFromHistory(config);
+    return;
+  }
+
+  if (action === "ls") {
+    if (args.length > 1) {
+      throw new Error("Usage: spoon context ls");
+    }
+    if (options.launch || options.branch || launchCommand.length > 0) {
+      throw new Error("Context ls does not support launch or branch options.");
+    }
+    if (options.name) {
+      throw new Error("Context ls does not support --name.");
+    }
+
+    const projectDir = process.cwd();
+    const links = collectContextLinks(projectDir, config);
+    printContextLinks(links);
+    return;
+  }
+
+  if (action === "remove") {
+    if (options.launch || options.branch || launchCommand.length > 0) {
+      throw new Error("Context remove does not support launch or branch options.");
+    }
+    if (options.name) {
+      throw new Error("Context remove does not support --name.");
+    }
+    const removeRef = args.slice(1).join(" ").trim() || undefined;
+    const projectDir = process.cwd();
+    const spoonDir = getProjectSpoonDir(projectDir);
+    const links = collectContextLinks(projectDir, config);
+    await removeProjectContextLinks(links, spoonDir, removeRef);
+    return;
+  }
+
+  const repoInput = args.join(" ").trim();
+  if (!repoInput) {
+    throw new Error("Repository reference required.");
+  }
+
+  if (options.launch || launchCommand.length > 0 || options.branch) {
+    throw new Error("Context command does not support launch or branch options.");
+  }
+
+  const contextName = options.name ? validateContextName(options.name) : undefined;
+  await addProjectContextLink(repoInput, config, contextName);
 }
 
 type HistoryEntry = {
@@ -1091,6 +1636,15 @@ async function runSpoon(command: string, positional: string[], options: Record<s
     }
 
     return;
+  }
+
+  if (command === "context") {
+    await runContextCommand(positional, options, launchCommand, config);
+    return;
+  }
+
+  if (options.name) {
+    throw new Error("Option --name is only supported by the context command.");
   }
 
   if (command === "pick") {

@@ -38,6 +38,10 @@ bun link
 | `spoon <org/repo> [-- <command...>]`                 | Override launch command for one run.               |
 | `spoon ls`                                            | List local repos and history entries.              |
 | `spoon add <repo> [-b <branch>]`                      | Resolve or clone a repo without launching.         |
+| `spoon context`                                        | Interactively select history repos to link into `.spoon/`. |
+| `spoon context <repo> [--name <name>]`                | Link repo context into the current project's `.spoon/`. |
+| `spoon context ls`                                     | List context links in the current project.         |
+| `spoon context remove [<repo-or-name>]`               | Remove context links by ref or interactive picker. |
 | `spoon remove`                                        | Interactively select local repos to remove.        |
 | `spoon config`                                        | Open config file in your system default app.       |
 | `spoon help [command]`                                | Show help.                                         |
@@ -137,6 +141,63 @@ spoon add sveltejs/kit
 spoon add https://github.com/sveltejs/svelte
 spoon add svelte
 spoon add sveltejs/kit -b next
+```
+
+### Manage project context links
+
+**Link repo context into this project**
+
+Description: Create a symlink in the current working directory under `.spoon/` that points to a locally cached repo. Default links use `.spoon/<org>_<repo>`; `--name` uses `.spoon/<name>`.
+
+Syntax:
+
+```bash
+spoon context
+spoon context <org/repo>
+spoon context <repo> --name <name>
+```
+
+Examples:
+
+```bash
+spoon context
+spoon context sveltejs/kit
+spoon context sveltejs/kit --name kit
+```
+
+**List context links**
+
+Description: Show context links currently present in this project's `.spoon/` directory.
+
+Syntax:
+
+```bash
+spoon context ls
+```
+
+Example:
+
+```bash
+spoon context ls
+```
+
+**Remove context links**
+
+Description: Remove one or more context links from this project's `.spoon/` directory.
+
+Syntax:
+
+```bash
+spoon context remove
+spoon context remove <repo-or-name>
+```
+
+Examples:
+
+```bash
+spoon context remove
+spoon context remove sveltejs/kit
+spoon context remove kit
 ```
 
 **List repos**
